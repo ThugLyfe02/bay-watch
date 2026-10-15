@@ -247,10 +247,12 @@ class Store:
           GROUP BY status ORDER BY status""").fetchall()
         discovery = self.discovery_report()
         missed_count = int(self.db.execute("SELECT COUNT(*) FROM missed_listing_feedback").fetchone()[0])
-        resale_rows = self.db.execute("""SELECT r.item_id,r.currency,r.amount,r.fees,r.shipping,r.refunds,r.other_costs
+        resale_rows = self.db.execute("""SELECT r.item_id,r.currency,SUM(CAST(r.amount AS NUMERIC)) AS amount,
+          SUM(CAST(r.fees AS NUMERIC)) AS fees,SUM(CAST(r.shipping AS NUMERIC)) AS shipping,
+          SUM(CAST(r.refunds AS NUMERIC)) AS refunds,SUM(CAST(r.other_costs AS NUMERIC)) AS other_costs
           FROM learning_events r WHERE r.event_type='resale' AND r.state='recorded'
           AND NOT EXISTS(SELECT 1 FROM learning_events n WHERE n.supersedes_event_id=r.id)
-          ORDER BY r.item_id,r.id""").fetchall()
+          AND r.amount IS NOT NULL GROUP BY r.item_id,r.currency ORDER BY r.item_id,r.currency""").fetchall()
         realized_by_currency: dict[str, Decimal] = {}
         realized_count = 0
         for sale in resale_rows:
@@ -258,7 +260,7 @@ class Store:
               AND p.event_type='purchase' AND p.state='recorded' AND p.currency=?
               AND NOT EXISTS(SELECT 1 FROM learning_events n WHERE n.supersedes_event_id=p.id)""",
               (sale["item_id"], sale["currency"])).fetchall()
-            if not purchases or sale["amount"] is None:
+            if not purchases:
                 continue
             basis = sum((Decimal(row["amount"]) for row in purchases if row["amount"] is not None), Decimal(0))
             net = (Decimal(sale["amount"]) - Decimal(sale["fees"]) - Decimal(sale["shipping"])
