@@ -72,6 +72,8 @@ Do not run multiple workers against the same database. SQLite state transition p
 - Low sample count is explicit. For cards, include grading company, grade, language, edition, card number, and variant in comp titles. Add more columns or a typed catalog before using this with other collectibles.
 - Seller score, feedback count, condition, shipping, tax, buyer fees, and uncertainty should all reduce the ceiling. Shipping and tax model are simplified and should be calibrated to marketplace checkout totals.
 
+The prioritized path to a durable edge is in [ROADMAP.md](ROADMAP.md): closeout learning, evidence-first opportunity dossiers, compliant search coverage, portfolio-aware scheduling, and production reliability gates.
+
 ## Current limits
 
 The starter intentionally does not scrape sold listings or claim API production approval. Sold comps are imported by the user. eBay production access to the Buy APIs requires approval, and API availability/terms can change. Verify current requirements before deploying or bidding. This is not a guarantee of winning or profit.
