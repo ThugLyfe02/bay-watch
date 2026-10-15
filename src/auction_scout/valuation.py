@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_FLOOR
+from decimal import Decimal
 from statistics import median
 import re
 
 from .models import Listing, Opportunity, SaleComp, Valuation
 from .identity import compatible_titles
+from .money import floor_money
 
 
 def _tokens(text: str) -> set[str]:
@@ -24,6 +25,8 @@ def estimate_value(listing: Listing, comps: list[SaleComp], *, now: datetime | N
     relevant: list[tuple[Decimal, float]] = []
     for comp in comps:
         if comp.price <= 0 or comp.sold_at.tzinfo is None:
+            continue
+        if comp.currency.upper() != listing.currency.upper():
             continue
         if not compatible_titles(listing.title, comp.title):
             continue
@@ -83,10 +86,11 @@ def analyze(listing: Listing, valuation: Valuation, *, tax_rate: Decimal = Decim
     for haircut in haircuts:
         retained *= Decimal(1) - haircut
     effective_discount = Decimal(1) - retained
-    all_in_cap = (valuation.low * (Decimal(1) - reserve_buffer) * retained).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+    all_in_cap = floor_money(valuation.low * (Decimal(1) - reserve_buffer) * retained, listing.currency)
     # Model buyer fee on hammer; sales tax on hammer + shipping + buyer fee.
     max_hammer = ((all_in_cap / (Decimal(1) + tax_rate) - listing.shipping) /
-                  (Decimal(1) + buyer_fee_rate)).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+                  (Decimal(1) + buyer_fee_rate))
+    max_hammer = floor_money(max_hammer, listing.currency)
     max_hammer = max(Decimal(0), max_hammer)
     estimated_edge = valuation.fair_value - (listing.current_price + listing.shipping)
     bid_headroom = max_hammer - listing.current_price

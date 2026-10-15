@@ -28,6 +28,7 @@ class SaleComp:
     shipping: Decimal = Decimal("0")
     condition: str = "unknown"
     source: str = "manual"
+    currency: str = "USD"
 
 
 @dataclass(frozen=True)

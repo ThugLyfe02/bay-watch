@@ -11,6 +11,7 @@ import time
 
 from .ebay import EbayClient, EbayError
 from .models import SaleComp
+from .money import validate_precision
 from .store import Store
 from .valuation import analyze, estimate_value, screen_listings
 
@@ -20,7 +21,7 @@ def load_comps(path: str) -> list[SaleComp]:
     with open(path, newline="", encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
             comps.append(SaleComp(r["title"], datetime.fromisoformat(r["sold_at"].replace("Z", "+00:00")),
-                                  Decimal(r["price"]), Decimal(r.get("shipping") or "0"), r.get("condition") or "unknown", r.get("source") or "manual"))
+                                  Decimal(r["price"]), Decimal(r.get("shipping") or "0"), r.get("condition") or "unknown", r.get("source") or "manual", (r.get("currency") or "USD").upper()))
     return comps
 
 
@@ -106,6 +107,7 @@ def main(argv: list[str] | None = None):
             if args.confirm != args.item_id: raise ValueError("confirmation must exactly match item id")
             amount = Decimal(args.max_amount)
             if amount <= 0 or amount > Decimal("1000000"): raise ValueError("maximum must be positive and at most 1,000,000")
+            validate_precision(amount, args.currency)
             if args.currency != item.currency: raise ValueError(f"currency mismatch: listing is {item.currency}")
             if args.lead_seconds < 3 or args.lead_seconds > 120: raise ValueError("lead must be 3..120 seconds")
             if item.end_time <= datetime.now(timezone.utc): raise ValueError("auction already ended")

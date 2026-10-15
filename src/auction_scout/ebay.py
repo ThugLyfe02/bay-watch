@@ -10,6 +10,7 @@ from urllib.parse import urlencode, quote
 from urllib.request import Request, urlopen
 
 from .models import Listing
+from .money import format_money
 
 
 class EbayError(RuntimeError): pass
@@ -78,5 +79,5 @@ class EbayClient:
     def place_proxy_bid(self, item_id: str, amount: Decimal, currency: str):
         # The endpoint validates bidder eligibility and auction state. Production access is gated by eBay.
         return self._request("POST", f"/buy/offer/v1_beta/bidding/{quote(item_id, safe='')}/place_proxy_bid",
-                             body={"maxAmount": {"currency": currency, "value": format(amount, ".2f")}}, retries=0)
+                             body={"maxAmount": {"currency": currency, "value": format_money(amount, currency)}}, retries=0)
 

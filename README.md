@@ -8,6 +8,7 @@ Bay Watch is an eBay-first auction research and bid workbench. It searches the o
 - No valuation is fabricated: `analyze` requires a sold-comps CSV and visibly reports confidence and comp count.
 - A bid intent requires the exact item ID and exact maximum amount. The maximum cannot be escalated by the worker.
 - Each currency requires an explicit open-auction exposure cap before arming. Budget reservations are atomic across local CLI attempts and include the full maximum bid for active auctions.
+- Sold comps with a different currency are excluded. Bid rounding and amount precision follow currency minor units, including zero- and three-decimal currencies.
 - Worker claims an intent before network I/O and never auto-retries a bid with an ambiguous outcome. Verify the account on eBay before taking any further action.
 - Production mode requires `EBAY_API_ENV=production`, `ENABLE_LIVE_BIDDING=YES`, and `--live`. eBay's Buy Offer API production access is partner-gated; sandbox is the default.
 - Keep tokens in a secrets manager. Do not use your eBay password or commit credentials.
@@ -29,8 +30,8 @@ auction-scout search "Umbreon PSA 7" --variant "Japanese Umbreon grade 7" --vari
 Search stores normalized results in SQLite and prints JSONL. Create `sold-comps.csv` with columns:
 
 ```csv
-title,sold_at,price,shipping,condition,source
-Pokemon Umbreon holo PSA 7,2026-09-12T18:00:00Z,210.00,0,graded,manual
+title,sold_at,price,shipping,condition,source,currency
+Pokemon Umbreon holo PSA 7,2026-09-12T18:00:00Z,210.00,0,graded,manual,USD
 ```
 
 Then analyze, set the total open-auction exposure cap, and arm a hard ceiling:

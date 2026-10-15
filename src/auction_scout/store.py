@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from .models import Listing
+from .money import validate_precision
 
 
 SCHEMA = """
@@ -71,6 +72,7 @@ class Store:
                        p.get("seller_feedback"), Decimal(p["seller_score"]) if p.get("seller_score") else None, p.get("location"))
 
     def arm_intent(self, item_id: str, max_amount: Decimal, currency: str, end_time: datetime, lead_seconds: int):
+        validate_precision(max_amount, currency)
         now = datetime.now(timezone.utc)
         submit_before = end_time.astimezone(timezone.utc).timestamp() - lead_seconds
         submit_before_dt = datetime.fromtimestamp(submit_before, timezone.utc)
@@ -87,8 +89,9 @@ class Store:
             if reserved + max_amount > cap:
                 raise ValueError(f"portfolio exposure cap exceeded: {reserved:.2f} reserved + {max_amount:.2f} requested > {cap:.2f} {currency}")
             # Only one active intent per item; callers must explicitly cancel before replacing.
-            if self.db.execute("SELECT 1 FROM bid_intents WHERE item_id=? AND status='armed'", (item_id,)).fetchone():
-                raise ValueError("an armed intent already exists for this item; cancel it before replacing")
+            if self.db.execute("SELECT 1 FROM bid_intents WHERE item_id=? AND status IN ('armed','submitting','submitted','unknown') AND end_time>?",
+                               (item_id, now.isoformat())).fetchone():
+                raise ValueError("an active or unresolved intent already exists for this item; verify its outcome before scheduling another")
             self.db.execute("INSERT INTO bid_intents(item_id,max_amount,currency,end_time,status,submit_before,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
                             (item_id, str(max_amount), currency, end_time.isoformat(), "armed", submit_before_dt.isoformat(), now.isoformat(), now.isoformat()))
             self.db.commit()
@@ -99,6 +102,7 @@ class Store:
 
     def set_budget(self, currency: str, amount: Decimal):
         if amount <= 0: raise ValueError("portfolio cap must be positive")
+        validate_precision(amount, currency)
         now = datetime.now(timezone.utc).isoformat()
         self.db.execute("BEGIN IMMEDIATE")
         try:

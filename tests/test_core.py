@@ -22,6 +22,10 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(value.confidence, "low")
         self.assertGreater(value.fair_value, Decimal("180"))
 
+    def test_estimator_never_mixes_currency_comp_prices(self):
+        comp = SaleComp(self.listing.title, self.now, Decimal("20000"), condition="graded", currency="JPY")
+        self.assertIsNone(estimate_value(self.listing, [comp], now=self.now))
+
     def test_estimator_rejects_wrong_card_grade_language_and_variant(self):
         listing = Listing("ebay:2", "Pokemon Umbreon holo PSA 7 Japanese #197", "https://example.test/2", "USD",
                           Decimal("100"), self.now + timedelta(minutes=5), Decimal("10"), "graded")
@@ -63,6 +67,8 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(ValueError): store.arm_intent(self.listing.item_id, Decimal("160"), "USD", self.listing.end_time, 8)
             row = store.armed_intents()[0]
             store.transition_intent(row["id"], "armed", "submitting", {})
+            with self.assertRaisesRegex(ValueError, "active or unresolved intent"):
+                store.arm_intent(self.listing.item_id, Decimal("160"), "USD", self.listing.end_time, 8)
             with self.assertRaises(ValueError): store.transition_intent(row["id"], "armed", "submitting", {})
             store.close()
 
@@ -83,6 +89,14 @@ class CoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cannot set cap below"):
                 store.set_budget("USD", Decimal("100"))
             store.close()
+
+    def test_zero_decimal_currency_rounds_caps_to_minor_unit(self):
+        listing = Listing("jpy", "Pokemon Umbreon", "https://example.test/jpy", "JPY", Decimal("1000"),
+                          self.now + timedelta(hours=2), Decimal("100"), "graded", 500, Decimal("99.5"))
+        value = Valuation(Decimal("20000"), Decimal("20000"), Decimal("20000"), 20, "high")
+        opportunity = analyze(listing, value, reserve_buffer=Decimal("0"))
+        self.assertEqual(opportunity.all_in_cap, Decimal("20000"))
+        self.assertEqual(opportunity.max_hammer, Decimal("19900"))
 
     def test_screen_ranks_eligible_headroom_and_excludes_expired_or_unmatched(self):
         now = self.now
