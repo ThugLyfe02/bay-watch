@@ -106,12 +106,32 @@ CREATE TABLE discovery_hits (
 CREATE INDEX discovery_hits_item ON discovery_hits(item_id,run_id);
 """
 
+MISSED_LISTING_SCHEMA = """
+CREATE TABLE missed_listing_feedback (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ item_id TEXT NOT NULL CHECK(length(trim(item_id)) > 0),
+ query TEXT NOT NULL CHECK(length(trim(query)) > 0),
+ profile TEXT,
+ source TEXT NOT NULL CHECK(length(trim(source)) > 0),
+ evidence_ref TEXT NOT NULL CHECK(length(trim(evidence_ref)) > 0),
+ observed_at TEXT NOT NULL,
+ reason TEXT,
+ idempotency_key TEXT NOT NULL UNIQUE
+);
+CREATE INDEX missed_listing_feedback_query_time ON missed_listing_feedback(query,observed_at);
+CREATE TRIGGER missed_listing_feedback_no_update BEFORE UPDATE ON missed_listing_feedback
+ BEGIN SELECT RAISE(ABORT, 'missed listing feedback is append-only'); END;
+CREATE TRIGGER missed_listing_feedback_no_delete BEFORE DELETE ON missed_listing_feedback
+ BEGIN SELECT RAISE(ABORT, 'missed listing feedback is append-only'); END;
+"""
+
 MIGRATIONS = ((1, SCHEMA), (2, LEARNING_SCHEMA),
               (3, "ALTER TABLE bid_intents ADD COLUMN prediction_id INTEGER REFERENCES prediction_snapshots(id);"),
               (4, "ALTER TABLE bid_intents ADD COLUMN settled_at TEXT;\n"
                   "ALTER TABLE bid_intents ADD COLUMN resolution_event_id INTEGER REFERENCES learning_events(id);"),
               (5, DISCOVERY_SCHEMA),
-              (6, "ALTER TABLE learning_events ADD COLUMN other_costs TEXT NOT NULL DEFAULT '0';"))
+              (6, "ALTER TABLE learning_events ADD COLUMN other_costs TEXT NOT NULL DEFAULT '0';"),
+              (7, MISSED_LISTING_SCHEMA))
 OUTCOME_STATES = {
     "auction": {"won", "lost", "no_sale", "cancelled", "unavailable", "unknown"},
     "purchase": {"recorded"},
@@ -187,6 +207,104 @@ class Store:
                 "distinct_listings": self.db.execute("SELECT COUNT(DISTINCT item_id) FROM discovery_hits").fetchone()[0],
                 "queries": [dict(r) for r in grouped], "recent_runs": [dict(r) for r in runs[:50]],
                 "recall_note": "Coverage describes recorded query activity and results; total marketplace recall is unknown."}
+
+    def record_missed_listing(self, item_id: str, *, query: str, source: str, evidence_ref: str,
+                              profile: str | None = None, observed_at: str | None = None,
+                              reason: str | None = None, idempotency_key: str | None = None) -> int:
+        """Append user-evidenced missed-search feedback; this is not a recall denominator."""
+        item_id, query, source, evidence_ref = (value.strip() for value in (item_id, query, source, evidence_ref))
+        if not all((item_id, query, source, evidence_ref)):
+            raise ValueError("item ID, query, source, and evidence reference are required")
+        timestamp = observed_at or datetime.now(timezone.utc).isoformat()
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("observation timestamp must include a timezone")
+        timestamp = parsed.astimezone(timezone.utc).isoformat()
+        stable = {"item_id": item_id, "query": query, "profile": profile, "source": source,
+                  "evidence_ref": evidence_ref, "observed_at": timestamp, "reason": reason}
+        key = idempotency_key or hashlib.sha256(self._canonical(stable).encode()).hexdigest()
+        with self.db:
+            self.db.execute("""INSERT OR IGNORE INTO missed_listing_feedback
+              (item_id,query,profile,source,evidence_ref,observed_at,reason,idempotency_key)
+              VALUES(?,?,?,?,?,?,?,?)""", (item_id, query, profile, source, evidence_ref, timestamp, reason, key))
+            row = self.db.execute("SELECT id FROM missed_listing_feedback WHERE idempotency_key=?", (key,)).fetchone()
+        return int(row["id"])
+
+    def evidence_coverage_report(self):
+        """Summarize captured evidence and gaps without implying complete marketplace recall."""
+        from .calibration import calibration_report
+
+        calibration = calibration_report(self)
+        predictions = int(self.db.execute("SELECT COUNT(*) FROM prediction_snapshots").fetchone()[0])
+        refs = self.db.execute("""SELECT COUNT(DISTINCT prediction_id) FROM learning_events e
+          WHERE e.event_type='market_reference' AND e.state='verified' AND prediction_id IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM learning_events n WHERE n.supersedes_event_id=e.id)""").fetchone()[0]
+        effective = self.db.execute("""SELECT event_type,state,source,COUNT(*) AS count FROM learning_events e
+          WHERE NOT EXISTS(SELECT 1 FROM learning_events n WHERE n.supersedes_event_id=e.id)
+          GROUP BY event_type,state,source ORDER BY event_type,state,source""").fetchall()
+        unresolved = self.db.execute("""SELECT status,COUNT(*) AS count FROM bid_intents
+          WHERE status IN ('submitting','submitted','unknown') AND settled_at IS NULL
+          GROUP BY status ORDER BY status""").fetchall()
+        discovery = self.discovery_report()
+        missed_count = int(self.db.execute("SELECT COUNT(*) FROM missed_listing_feedback").fetchone()[0])
+        resale_rows = self.db.execute("""SELECT r.item_id,r.currency,r.amount,r.fees,r.shipping,r.refunds,r.other_costs
+          FROM learning_events r WHERE r.event_type='resale' AND r.state='recorded'
+          AND NOT EXISTS(SELECT 1 FROM learning_events n WHERE n.supersedes_event_id=r.id)
+          ORDER BY r.item_id,r.id""").fetchall()
+        realized_by_currency: dict[str, Decimal] = {}
+        realized_count = 0
+        for sale in resale_rows:
+            purchases = self.db.execute("""SELECT p.amount FROM learning_events p WHERE p.item_id=?
+              AND p.event_type='purchase' AND p.state='recorded' AND p.currency=?
+              AND NOT EXISTS(SELECT 1 FROM learning_events n WHERE n.supersedes_event_id=p.id)""",
+              (sale["item_id"], sale["currency"])).fetchall()
+            if not purchases or sale["amount"] is None:
+                continue
+            basis = sum((Decimal(row["amount"]) for row in purchases if row["amount"] is not None), Decimal(0))
+            net = (Decimal(sale["amount"]) - Decimal(sale["fees"]) - Decimal(sale["shipping"])
+                   - Decimal(sale["refunds"]) - Decimal(sale["other_costs"]) - basis)
+            realized_by_currency[sale["currency"]] = realized_by_currency.get(sale["currency"], Decimal(0)) + net
+            realized_count += 1
+        missed_by_profile = [dict(row) for row in self.db.execute("""SELECT COALESCE(profile,'(unprofiled)') AS profile,
+          COUNT(*) AS evidence_count,MAX(observed_at) AS latest_observed_at
+          FROM missed_listing_feedback GROUP BY COALESCE(profile,'(unprofiled)') ORDER BY profile""").fetchall()]
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "predictions": {"snapshot_count": predictions, "with_verified_later_market_reference": int(refs),
+                            "without_verified_later_market_reference": max(0, predictions - int(refs))},
+            "calibration": {"target": calibration["target"], "sample_count": calibration["sample_count"],
+                            "mean_absolute_error": calibration["mean_absolute_error"],
+                            "mean_signed_error": calibration["mean_signed_error"],
+                            "uncertainty_range_coverage": calibration["uncertainty_range_coverage"],
+                            "warning": calibration["warning"]},
+            "auction_and_resale_evidence": {"effective_event_counts": [dict(row) for row in effective],
+                                             "unresolved_intents_by_status": [dict(row) for row in unresolved]},
+            "realized_resale": {"completed_resale_count_with_purchase_basis": realized_count,
+                                "net_profit_by_currency": {key: str(value) for key, value in sorted(realized_by_currency.items())},
+                                "currencies_are_not_converted": True},
+            "discovery": {"run_count": discovery["run_count"], "distinct_returned_listings": discovery["distinct_listings"],
+                          "query_count": len(discovery["queries"]),
+                          "error_runs": sum(query["error_count"] for query in discovery["queries"]),
+                          "recall_note": discovery["recall_note"]},
+            "missed_listing_feedback": {"user_evidenced_record_count": missed_count,
+                                        "by_profile": missed_by_profile,
+                                        "denominator_available": False,
+                                        "note": "User-provided examples can guide query improvements; total marketplace recall is unknown."},
+            "calibration_status": "measurable" if int(refs) else "not_measurable_no_linked_verified_reference",
+            "realized_margin_status": "measurable_only_for_completed_resales_with_purchase_basis",
+            "false_positive_rate_status": "not_measurable_no_reviewed_candidate_labeling_protocol",
+            "missed_close_rate_status": "not_measurable_no_verified_execution_miss_labels",
+            "gaps": ["Marketplace recall is unknown because recorded queries and user examples do not define a complete denominator."]
+                     + (["No linked verified completed-market reference yet; valuation calibration error is not measurable."] if not refs else [])
+                     + (["No user-evidenced missed listings yet; discovery blind spots are not measurable."] if not missed_count else [])
+                     + ["False-positive rate is not measurable until candidates have a reviewed, consistent outcome label.",
+                        "Missed-close rate is not measurable until intended close, worker timing, and verified execution-miss labels are captured."]
+                     + (["No completed resale with a recorded purchase basis yet; realized net margin is not measurable."]
+                        if not self.db.execute("""SELECT 1 FROM learning_events r WHERE r.event_type='resale' AND r.state='recorded'
+                           AND NOT EXISTS(SELECT 1 FROM learning_events n WHERE n.supersedes_event_id=r.id)
+                           AND EXISTS(SELECT 1 FROM learning_events p WHERE p.item_id=r.item_id AND p.event_type='purchase' AND p.state='recorded'
+                             AND p.currency=r.currency AND NOT EXISTS(SELECT 1 FROM learning_events n2 WHERE n2.supersedes_event_id=p.id)) LIMIT 1""").fetchone() else [])
+        }
 
     def close(self): self.db.close()
 

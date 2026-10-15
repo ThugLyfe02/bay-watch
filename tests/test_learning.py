@@ -45,7 +45,7 @@ class LearningLoopTests(unittest.TestCase):
             "2026-01-01T00:00:00+00:00", "unknown", "{}", "2025-01-01T00:00:00+00:00"))
         db.commit(); db.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.schema_version(), 6)
+        self.assertEqual(self.store.schema_version(), 7)
         self.assertIsNotNone(self.store.get_listing("old"))
         self.assertIn("prediction_id", {r["name"] for r in self.store.db.execute("PRAGMA table_info(bid_intents)")})
 
@@ -188,6 +188,31 @@ class LearningLoopTests(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(result[0]["realized_net_profit"], "30")
         self.assertEqual(result[0]["status"], "realized")
+
+    def test_missed_listing_feedback_is_user_evidenced_append_only_and_idempotent(self):
+        args = dict(query="Umbreon PSA 7", source="user_report", evidence_ref="https://example.invalid/item/42",
+                    profile="pokemon-cards", observed_at="2026-02-01T10:00:00Z", reason="title omitted card name")
+        first = self.store.record_missed_listing("v1|42|0", **args)
+        self.assertEqual(first, self.store.record_missed_listing("v1|42|0", **args))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.db.execute("UPDATE missed_listing_feedback SET query='other' WHERE id=?", (first,))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.db.execute("DELETE FROM missed_listing_feedback WHERE id=?", (first,))
+        report = self.store.evidence_coverage_report()
+        self.assertEqual(report["missed_listing_feedback"]["user_evidenced_record_count"], 1)
+        self.assertFalse(report["missed_listing_feedback"]["denominator_available"])
+        self.assertIn("recall is unknown", report["missed_listing_feedback"]["note"])
+
+    def test_evidence_report_states_zero_sample_and_outcome_gaps_without_inference(self):
+        report = self.store.evidence_coverage_report()
+        self.assertEqual(report["predictions"]["snapshot_count"], 0)
+        self.assertEqual(report["calibration"]["sample_count"], 0)
+        self.assertIsNone(report["calibration"]["mean_absolute_error"])
+        self.assertEqual(report["calibration_status"], "not_measurable_no_linked_verified_reference")
+        self.assertEqual(report["false_positive_rate_status"], "not_measurable_no_reviewed_candidate_labeling_protocol")
+        self.assertEqual(report["missed_close_rate_status"], "not_measurable_no_verified_execution_miss_labels")
+        self.assertEqual(report["realized_resale"]["completed_resale_count_with_purchase_basis"], 0)
+        self.assertTrue(any("recall is unknown" in note.casefold() for note in report["gaps"]))
 
 
 if __name__ == "__main__":

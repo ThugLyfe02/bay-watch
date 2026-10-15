@@ -88,6 +88,14 @@ auction-scout dossier ITEM_ID --format text
 
 `search` and `opportunities` also preserve each alias query run and the listing IDs it surfaced. Use `discovery-report` to inspect recorded coverage, freshness, API errors, and duplicate yield. This describes Bay Watch's query activity; total marketplace recall remains unknown. A reviewed manual auction result can settle a reservation by passing its `--intent-id` to `record-outcome`.
 
+Use `record-missed` only when you have a concrete listing and a reviewable source reference. It appends a user-evidenced example against the query/profile you expected to find it; this helps refine aliases but does not establish a marketplace-wide recall denominator. `evidence-report` tracks prediction snapshots still missing verified market references, calibration sample/error availability, resolved versus unresolved intent evidence, recorded resale economics, query coverage, and the count of user-evidenced misses. Zero samples are reported as unmeasurable rather than as zero error or zero missed closes:
+
+```bash
+auction-scout record-missed 'v1|123456|0' --query 'Umbreon PSA 7' --source user_report \
+  --evidence-ref 'https://www.ebay.com/itm/123456' --profile pokemon-cards --reason 'title omitted card number'
+auction-scout evidence-report
+```
+
 Use `plan` to review saved candidates alongside currency-specific caps, active reservations, close timing, and worker-queue warnings. It uses visible ranking components and never edits a user maximum or submits bids.
 
 ## What makes the research layer useful
@@ -107,7 +115,7 @@ The starter intentionally does not scrape sold listings or claim API production 
 
 ## Database upgrades
 
-The SQLite database migrates transactionally using `PRAGMA user_version`. Version 6 adds immutable prediction snapshots, append-only learning events, explicit intent settlement references, discovery query provenance, and separate other-cost accounting. Opening a pre-migration database preserves its listings, intents, budget limits, and audit history. Ended unresolved intents keep their full maximum reserved until definitive evidence settles them. Back up the local database before upgrading. SQLite remains single-process.
+The SQLite database migrates transactionally using `PRAGMA user_version`. Version 7 adds an append-only user-evidenced missed-listing ledger to the v6 prediction, outcome, discovery, intent-settlement, and cost-accounting tables. Opening a pre-migration database preserves its listings, intents, budget limits, and audit history. Ended unresolved intents keep their full maximum reserved until definitive evidence settles them. Back up the local database before upgrading. SQLite remains single-process.
 
 ## Tests
 

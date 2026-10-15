@@ -94,10 +94,20 @@ def main(argv: list[str] | None = None):
     outcome.add_argument("--prediction-id", type=int); outcome.add_argument("--observed-at")
     outcome.add_argument("--confidence", default="user_confirmed"); outcome.add_argument("--supersedes", type=int)
     outcome.add_argument("--intent-id", type=int, help="settle this unresolved intent when recording a definitive auction outcome")
+    missed = sub.add_parser("record-missed", help="Append a user-evidenced listing missed by a recorded search")
+    missed.add_argument("item_id", help="marketplace item ID supplied by the user")
+    missed.add_argument("--query", required=True, help="exact query or alias the user expected to surface it")
+    missed.add_argument("--source", required=True, help="where the user found the missed listing")
+    missed.add_argument("--evidence-ref", required=True, help="URL, import row, or other reviewable reference")
+    missed.add_argument("--profile", help="saved category profile name when applicable")
+    missed.add_argument("--observed-at", help="timezone-aware timestamp; defaults to now")
+    missed.add_argument("--reason", help="user-described reason it was missed")
+    missed.add_argument("--idempotency-key", help="stable key for safe replay")
     cal = sub.add_parser("calibration", help="Report chronological valuation calibration against verified later sale references")
     cal.add_argument("--since"); cal.add_argument("--until")
     sub.add_parser("margin-report", help="Report recorded purchase/resale economics; projections are excluded")
     sub.add_parser("discovery-report", help="Report recorded Browse query coverage, freshness, errors, and duplicate yield")
+    sub.add_parser("evidence-report", help="Summarize recorded outcome, calibration, margin, and discovery evidence gaps")
     plan = sub.add_parser("plan", help="Rank saved candidates by visible components without changing bids")
     plan.add_argument("--concurrency", type=int, default=4)
     plan.add_argument("--safe-window-seconds", type=int, default=25)
@@ -267,6 +277,12 @@ def main(argv: list[str] | None = None):
             if args.kind == "auction" and args.state in {"won", "lost", "no_sale", "cancelled", "unavailable"} and args.intent_id is not None:
                 store.settle_intent(args.intent_id, event_id)
             print(json.dumps({"event_id": event_id, "idempotent": True}))
+        elif args.cmd == "record-missed":
+            feedback_id = store.record_missed_listing(args.item_id, query=args.query, source=args.source,
+                evidence_ref=args.evidence_ref, profile=args.profile, observed_at=args.observed_at,
+                reason=args.reason, idempotency_key=args.idempotency_key)
+            print(json.dumps({"feedback_id": feedback_id, "idempotent": True,
+                              "note": "User-evidenced feedback is not a marketplace recall denominator."}))
         elif args.cmd == "calibration":
             print(json.dumps(calibration_report(store, since=args.since, until=args.until), indent=2))
         elif args.cmd == "margin-report":
@@ -365,6 +381,8 @@ def main(argv: list[str] | None = None):
                 print(dossier_data["note"])
         elif args.cmd == "discovery-report":
             print(json.dumps(store.discovery_report(), indent=2))
+        elif args.cmd == "evidence-report":
+            print(json.dumps(store.evidence_coverage_report(), indent=2))
         elif args.cmd == "plan":
             print(json.dumps(portfolio_plan(store, concurrency=args.concurrency,
                 safe_window_seconds=args.safe_window_seconds), indent=2))

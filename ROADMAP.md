@@ -20,11 +20,11 @@ Export each saved prediction as JSON or readable text with listing facts, identi
 
 ## 3. Compliant discovery coverage — query provenance implemented
 
-Track each Browse query/alias run and every listing ID it returned, then report run freshness, API error class, and duplicate yield. Users can provide title aliases directly. Saved reusable category profiles and evidence-backed missed-search feedback remain future work; total marketplace recall is explicitly unknown.
+Track each Browse query/alias run and every listing ID it returned, then report run freshness, API error class, and duplicate yield. Users can provide title aliases directly. `record-missed` now captures an append-only, source-referenced user example and `evidence-report` counts those records without treating them as a recall denominator. Saved reusable category profiles remain future work; total marketplace recall is explicitly unknown.
 
 **Why it compounds:** broad title vocabulary and category-specific language expose under-described listings earlier, while coverage telemetry makes search improvements measurable.
 
-**Acceptance bar:** deduplicated listings retain all matching query provenance; API errors and freshness are visible; no scraping, private endpoints, or anti-bot bypass. Current query coverage is measured only from official Browse results and does not claim complete recall.
+**Acceptance bar:** deduplicated listings retain all matching query provenance; API errors and freshness are visible; user-provided missed examples have a source reference and are reproducible; no scraping, private endpoints, or anti-bot bypass. Current query coverage is measured only from official Browse results and user-provided examples, and does not claim complete recall.
 
 ## 4. Portfolio-aware close and capital allocator — read-only planning foundation
 
@@ -36,7 +36,7 @@ The `plan` report ranks saved candidates within each currency using visible head
 
 ## 5. Production reliability gate
 
-Move from the current single-process SQLite worker to a transactional server-side queue only when measured concurrency requires it. Add idempotent claims, monitored API latency, clock-skew checks, alerting, credential rotation guidance, and a paper-trading period before any production bid flow.
+Richer worker restart and latency observability remains on the roadmap. Capture claim, preflight, and submission timing; no-bid reasons; restart recovery; and ambiguous POST states before using operational rates to tune execution. Move from the current single-process SQLite worker to a transactional server-side queue only when measured concurrency requires it. Add idempotent claims, clock-skew checks, alerting, credential rotation guidance, and a paper-trading period before any production bid flow.
 
 **Why it compounds:** reliability preserves the value of the research layer and prevents duplicate or late submissions as the number of watched auctions grows.
 
@@ -49,5 +49,9 @@ Move from the current single-process SQLite worker to a transactional server-sid
 3. Search coverage telemetry and more permitted data sources.
 4. Portfolio-aware scheduling, informed by real concurrency and outcome data.
 5. Server-side queue and production reliability gates when usage justifies them.
+
+## Evidence accumulation gate
+
+Before calibration or portfolio policy is changed, collect real linked market references, definitive auction outcomes, actual checkout records, and completed resale records. Use `evidence-report` to monitor sample counts and missing links. Record missed listings only with user-provided evidence. When samples exist, add chronological, versioned shadow evaluations by saved category profile; compare against the current policy and simple baseline, require explicit review, and never promote automatically into bidding. Measured worker latency and restart/fault recovery remain later observability work; a submitting/unknown intent must stay unresolved and must never be retried on restart.
 
 The competitive edge should be measured as improved candidate coverage, lower valuation error, fewer bad buys, realized net margin, and missed-close rate. Bid speed alone is not the success metric.
