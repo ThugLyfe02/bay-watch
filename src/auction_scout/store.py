@@ -33,6 +33,21 @@ CREATE TABLE IF NOT EXISTS budget_limits (
 );
 """
 
+_SENSITIVE_AUDIT_KEYS = {"token", "accesstoken", "refreshtoken", "clientsecret", "secret",
+                         "authorization", "password", "cookie", "apikey", "privatekey"}
+
+
+def _redact_audit(value):
+    if isinstance(value, dict):
+        def is_sensitive(key):
+            normalized = "".join(char for char in key.casefold() if char.isalnum())
+            return normalized in _SENSITIVE_AUDIT_KEYS or normalized.endswith("token")
+        return {key: ("[REDACTED]" if is_sensitive(key) else _redact_audit(item))
+                for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_audit(item) for item in value]
+    return value
+
 
 class Store:
     def __init__(self, path: str):
@@ -50,7 +65,8 @@ class Store:
     def audit(self, action: str, item_id: str | None, details: dict):
         with self.db:
             self.db.execute("INSERT INTO audit_log(occurred_at,action,item_id,details_json) VALUES(?,?,?,?)",
-                            (datetime.now(timezone.utc).isoformat(), action, item_id, json.dumps(details, sort_keys=True)))
+                            (datetime.now(timezone.utc).isoformat(), action, item_id,
+                             json.dumps(_redact_audit(details), sort_keys=True)))
 
     def save_listing(self, item: Listing):
         payload = {"seller_feedback": item.seller_feedback, "seller_score": str(item.seller_score) if item.seller_score is not None else None, "location": item.location}

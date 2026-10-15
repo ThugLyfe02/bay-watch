@@ -93,8 +93,11 @@ def submit_due_intents(store: Store, client: EbayClient, *, concurrency: int = 4
         if reason:
             return state, {"phase": "preflight", "no_bid_submitted": True, "reason": reason}
         try:
-            return "submitted", {"response": client.place_proxy_bid(
-                row["item_id"], Decimal(row["max_amount"]), row["currency"])}
+            response = client.place_proxy_bid(row["item_id"], Decimal(row["max_amount"]), row["currency"])
+            safe_fields = ("auctionStatus", "highBidder", "reservePriceMet")
+            summary = {key: response[key] for key in safe_fields if isinstance(response, dict) and key in response}
+            return "submitted", {"response_summary": summary, "max_amount": row["max_amount"],
+                                  "currency": row["currency"], "raw_response_stored": False}
         except Exception as exc:
             return "unknown", {"phase": "bid_submission", "error": str(exc),
                                "action": "verify in eBay before any manual retry"}

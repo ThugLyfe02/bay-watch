@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from threading import Barrier
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -74,6 +75,18 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(ValueError): store.transition_intent(row["id"], "armed", "submitting", {})
             store.close()
 
+    def test_audit_log_redacts_nested_credentials(self):
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            store.audit("test", "item", {"access_token": "secret-a", "nested": {
+                "client-secret": "secret-b", "refreshToken": "secret-c", "keep": "visible"}})
+            payload = json.loads(store.db.execute("SELECT details_json FROM audit_log").fetchone()[0])
+            self.assertEqual(payload["access_token"], "[REDACTED]")
+            self.assertEqual(payload["nested"]["client-secret"], "[REDACTED]")
+            self.assertEqual(payload["nested"]["refreshToken"], "[REDACTED]")
+            self.assertEqual(payload["nested"]["keep"], "visible")
+            store.close()
+
     def test_worker_submits_simultaneous_closes_in_parallel(self):
         class ParallelClient:
             def __init__(self, end_time):
@@ -109,6 +122,10 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(len(client.calls), 2)
             self.assertEqual([row["status"] for row in store.db.execute("SELECT status FROM bid_intents ORDER BY id")],
                              ["submitted", "submitted"])
+            audit = [json.loads(row[0]) for row in store.db.execute(
+                "SELECT details_json FROM audit_log WHERE action='bid_intent_submitted'")]
+            self.assertTrue(all(entry["raw_response_stored"] is False for entry in audit))
+            self.assertTrue(all("response" not in entry for entry in audit))
             store.close()
 
     def test_worker_preflight_blocks_when_live_minimum_exceeds_hard_cap(self):

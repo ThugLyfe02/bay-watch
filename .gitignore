@@ -1,0 +1,20 @@
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+
+# Local auction history, bid intents, and audit trail
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+
+# Python build and test artifacts
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/

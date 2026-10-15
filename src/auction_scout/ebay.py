@@ -49,6 +49,7 @@ class EbayClient:
                     return json.loads(content) if content else {}
             except HTTPError as e:
                 message = e.read().decode(errors="replace")[:1000]
+                message = message.replace(access_token, "[REDACTED]")
                 if e.code == 429 and attempt < retries:
                     time.sleep(min(2 ** attempt, 4)); continue
                 # Never retry bid submission on 5xx/ambiguous responses.

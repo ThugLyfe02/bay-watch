@@ -2,7 +2,7 @@ import unittest
 import json
 from decimal import Decimal
 from io import BytesIO
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 
 from auction_scout.ebay import EbayClient, EbayError
@@ -33,6 +33,16 @@ class EbayClientTests(unittest.TestCase):
         self.assertEqual(sent.get_header("Authorization"), "Bearer test-token")
         self.assertIn("v1%7C123456%7C0", sent.full_url)
         self.assertNotIn("test-token", sent.full_url)
+
+    def test_api_error_body_cannot_echo_user_token_into_logs(self):
+        client = EbayClient(token="secret-user-token", env="sandbox")
+        error = HTTPError("https://api.sandbox.ebay.com/bid", 400, "bad request", {},
+                          BytesIO(b'{"message":"secret-user-token rejected"}'))
+        with patch("auction_scout.ebay.urlopen", side_effect=error):
+            with self.assertRaises(EbayError) as raised:
+                client.place_proxy_bid("v1|123456|0", Decimal("99"), "USD")
+        self.assertNotIn("secret-user-token", str(raised.exception))
+        self.assertIn("[REDACTED]", str(raised.exception))
 
 
 if __name__ == "__main__": unittest.main()
