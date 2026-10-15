@@ -40,7 +40,7 @@ Then analyze, set the total open-auction exposure cap, and arm a hard ceiling:
 auction-scout analyze 'v1|ITEM_ID|0' --comps sold-comps.csv --tax 0.08875 --buffer 0.10
 auction-scout budget-set --currency USD --amount 500
 auction-scout budget-status --currency USD
-auction-scout arm 'v1|ITEM_ID|0' --max 175.00 --currency USD --lead-seconds 8 --confirm 'v1|ITEM_ID|0'
+auction-scout arm 'v1|ITEM_ID|0' --max 175.00 --currency USD --lead-seconds 20 --confirm 'v1|ITEM_ID|0'
 auction-scout intents
 auction-scout worker --loop
 ```
@@ -53,7 +53,7 @@ auction-scout opportunities "Umbreon PSA 7" --variant "Japanese Umbreon grade 7"
 
 Only medium/high confidence matches with a nonnegative ceiling headroom and a specified condition are marked eligible. The report still includes lower-confidence candidates as watch-only so thin evidence is visible.
 
-The worker posts the eBay proxy bid at the configured lead time. eBay's proxy bidding system accepts the buyer's maximum and bids only as needed. Do not enter an amount above your personal all-in budget. For a production account, after approval:
+The worker posts the eBay proxy bid at the configured lead time. The 12-second minimum includes the API timeout plus polling and scheduling margin. Simultaneous intents use bounded parallel submission; an oversized due batch is warned because queued requests may miss close. eBay's proxy bidding system accepts the buyer's maximum and bids only as needed. Do not enter an amount above your personal all-in budget. For a production account, after approval:
 
 ```bash
 export EBAY_API_ENV=production

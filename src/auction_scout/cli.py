@@ -14,6 +14,7 @@ from .models import SaleComp
 from .money import validate_precision
 from .store import Store
 from .valuation import analyze, estimate_value, screen_listings
+from .worker import submit_due_intents
 
 
 def load_comps(path: str) -> list[SaleComp]:
@@ -47,7 +48,7 @@ def main(argv: list[str] | None = None):
     a.add_argument("--buyer-fee", default="0"); a.add_argument("--buffer", default="0.08")
     arm = sub.add_parser("arm", help="Arm an exact maximum proxy bid for one item")
     arm.add_argument("item_id"); arm.add_argument("--max", required=True, dest="max_amount"); arm.add_argument("--currency", default="USD")
-    arm.add_argument("--lead-seconds", type=int, default=8); arm.add_argument("--confirm", required=True, help="Type the exact item id to confirm the scheduled bid")
+    arm.add_argument("--lead-seconds", type=int, default=20); arm.add_argument("--confirm", required=True, help="Type the exact item id to confirm the scheduled bid")
     sub.add_parser("intents", help="List armed bid intents")
     c = sub.add_parser("cancel", help="Cancel an armed bid intent")
     c.add_argument("intent_id", type=int)
@@ -56,7 +57,8 @@ def main(argv: list[str] | None = None):
     bg = sub.add_parser("budget-status", help="Show portfolio cap, reserved exposure, and available headroom")
     bg.add_argument("--currency", default="USD")
     w = sub.add_parser("worker", help="Submit due intents once, or poll when --loop is set")
-    w.add_argument("--loop", action="store_true"); w.add_argument("--poll-seconds", type=float, default=1.0)
+    w.add_argument("--loop", action="store_true"); w.add_argument("--poll-seconds", type=float, default=0.25)
+    w.add_argument("--concurrency", type=int, default=4, help="bounded simultaneous API submissions (1..16)")
     w.add_argument("--live", action="store_true", help="Required for production API calls")
     args = p.parse_args(argv)
     store = Store(args.db)
@@ -109,7 +111,7 @@ def main(argv: list[str] | None = None):
             if amount <= 0 or amount > Decimal("1000000"): raise ValueError("maximum must be positive and at most 1,000,000")
             validate_precision(amount, args.currency)
             if args.currency != item.currency: raise ValueError(f"currency mismatch: listing is {item.currency}")
-            if args.lead_seconds < 3 or args.lead_seconds > 120: raise ValueError("lead must be 3..120 seconds")
+            if args.lead_seconds < 12 or args.lead_seconds > 120: raise ValueError("lead must be 12..120 seconds; the API timeout, poll interval, and scheduling margin require headroom")
             if item.end_time <= datetime.now(timezone.utc): raise ValueError("auction already ended")
             store.arm_intent(item.item_id, amount, args.currency, item.end_time, args.lead_seconds)
             print(f"Armed item={item.item_id} max={amount:.2f} {args.currency}; cancel with `auction-scout cancel <intent_id>` before submission.")
@@ -129,24 +131,12 @@ def main(argv: list[str] | None = None):
             env = os.getenv("EBAY_API_ENV", "sandbox").casefold()
             if env == "production" and (not args.live or os.getenv("ENABLE_LIVE_BIDDING") != "YES"):
                 raise ValueError("production bidding requires --live and ENABLE_LIVE_BIDDING=YES")
-            client = None
+            if not 1 <= args.concurrency <= 16: raise ValueError("concurrency must be between 1 and 16")
+            client = EbayClient()
             while True:
-                due = store.due_intents(datetime.now(timezone.utc))
-                for row in due:
-                    if datetime.now(timezone.utc) >= datetime.fromisoformat(row["end_time"]):
-                        store.transition_intent(row["id"], "armed", "expired", {"reason": "auction already ended"}); continue
-                    # Claim before network I/O. If the result is ambiguous, never retry automatically.
-                    store.transition_intent(row["id"], "armed", "submitting", {"max_amount": row["max_amount"], "currency": row["currency"]})
-                    try:
-                        client = client or EbayClient()
-                        response = client.place_proxy_bid(row["item_id"], Decimal(row["max_amount"]), row["currency"])
-                        store.transition_intent(row["id"], "submitting", "submitted", {"response": response})
-                        print(f"Submitted proxy bid for {row['item_id']} at max {row['max_amount']} {row['currency']}")
-                    except Exception as e:
-                        store.transition_intent(row["id"], "submitting", "unknown", {"error": str(e), "action": "verify in eBay before any manual retry"})
-                        print(f"Outcome unknown for {row['item_id']}; verify in eBay. No retry sent. Error: {e}", file=sys.stderr)
+                submit_due_intents(store, client, concurrency=args.concurrency)
                 if not args.loop: break
-                time.sleep(max(0.25, min(args.poll_seconds, 10)))
+                time.sleep(max(0.05, min(args.poll_seconds, 1)))
     finally:
         store.close()
 

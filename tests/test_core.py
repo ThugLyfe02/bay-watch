@@ -1,11 +1,13 @@
 import tempfile
 import unittest
+from threading import Barrier
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from auction_scout.models import Listing, SaleComp, Valuation
 from auction_scout.store import Store
 from auction_scout.valuation import analyze, estimate_value, screen_listings
+from auction_scout.worker import submit_due_intents
 
 
 class CoreTests(unittest.TestCase):
@@ -70,6 +72,35 @@ class CoreTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "active or unresolved intent"):
                 store.arm_intent(self.listing.item_id, Decimal("160"), "USD", self.listing.end_time, 8)
             with self.assertRaises(ValueError): store.transition_intent(row["id"], "armed", "submitting", {})
+            store.close()
+
+    def test_worker_submits_simultaneous_closes_in_parallel(self):
+        class ParallelClient:
+            def __init__(self):
+                self.barrier = Barrier(2)
+                self.calls = []
+
+            def place_proxy_bid(self, item_id, amount, currency):
+                self.calls.append((item_id, amount, currency))
+                self.barrier.wait(timeout=2)
+                return {"status": "accepted"}
+
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            store.set_budget("USD", Decimal("400"))
+            end_time = datetime.now(timezone.utc) + timedelta(seconds=10)
+            for item_id in ("ebay:parallel-1", "ebay:parallel-2"):
+                listing = Listing(item_id, self.listing.title, f"https://example.test/{item_id}", "USD",
+                                  Decimal("100"), end_time, Decimal("0"), "graded")
+                store.save_listing(listing)
+                store.arm_intent(item_id, Decimal("150"), "USD", end_time, 12)
+
+            client = ParallelClient()
+            submitted, unknown = submit_due_intents(store, client, concurrency=2)
+            self.assertEqual((submitted, unknown), (2, 0))
+            self.assertEqual(len(client.calls), 2)
+            self.assertEqual([row["status"] for row in store.db.execute("SELECT status FROM bid_intents ORDER BY id")],
+                             ["submitted", "submitted"])
             store.close()
 
     def test_portfolio_budget_reserves_full_bid_max_and_blocks_overcommit(self):
