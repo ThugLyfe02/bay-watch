@@ -26,13 +26,13 @@ Track each Browse query/alias run and every listing ID it returned, then report 
 
 **Acceptance bar:** deduplicated listings retain all matching query provenance; API errors and freshness are visible; no scraping, private endpoints, or anti-bot bypass. Current query coverage is measured only from official Browse results and does not claim complete recall.
 
-## 4. Portfolio-aware close and capital allocator
+## 4. Portfolio-aware close and capital allocator — read-only planning foundation
 
-When many auctions overlap, rank due intents by estimated risk-adjusted surplus and available capital, while preserving the user's explicit per-item maximum and currency exposure cap. Add closeout reconciliation before releasing an unresolved reservation. Show any intents that may miss their close because the configured worker capacity is insufficient.
+The `plan` report ranks saved candidates within each currency using visible headroom, confidence, comp count, evidence freshness, and close time. It reports caps, reservations, queue depth, and close-window warnings without changing any user maximum or submitting bids. Further work: intent-level latency evidence and an explicit capacity model before proposing allocation changes.
 
 **Why it compounds:** capital and API capacity go to the best-supported opportunities, not simply the earliest rows in a queue. The worker now refreshes each listing before bidding and warns when due work exceeds its concurrency; scheduling should later use measured latency and expected risk-adjusted surplus.
 
-**Acceptance bar:** allocations are deterministic and auditable; hard caps cannot be exceeded; unknown bid outcomes retain their reservation until verified; overload is visible before a close window.
+**Acceptance bar:** rankings are deterministic and auditable; hard caps cannot be exceeded; unknown bid outcomes retain their reservation until verified; overload is visible before a close window. Current report is advisory and currency-separated.
 
 ## 5. Production reliability gate
 

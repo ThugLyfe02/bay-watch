@@ -18,6 +18,7 @@ from .calibration import calibration_report
 from .identity import extract_identity, compatible_titles
 from .valuation import analyze, estimate_value, screen_listings
 from .valuation import title_similarity
+from .planning import portfolio_plan
 from .worker import submit_due_intents
 
 
@@ -89,7 +90,7 @@ def main(argv: list[str] | None = None):
     outcome.add_argument("item_id"); outcome.add_argument("--kind", choices=["auction", "purchase", "resale", "market_reference"], required=True)
     outcome.add_argument("--state", required=True); outcome.add_argument("--source", required=True); outcome.add_argument("--evidence-ref", required=True)
     outcome.add_argument("--currency"); outcome.add_argument("--amount"); outcome.add_argument("--fees", default="0")
-    outcome.add_argument("--shipping", default="0"); outcome.add_argument("--refunds", default="0")
+    outcome.add_argument("--shipping", default="0"); outcome.add_argument("--refunds", default="0"); outcome.add_argument("--other-costs", default="0")
     outcome.add_argument("--prediction-id", type=int); outcome.add_argument("--observed-at")
     outcome.add_argument("--confidence", default="user_confirmed"); outcome.add_argument("--supersedes", type=int)
     outcome.add_argument("--intent-id", type=int, help="settle this unresolved intent when recording a definitive auction outcome")
@@ -97,6 +98,9 @@ def main(argv: list[str] | None = None):
     cal.add_argument("--since"); cal.add_argument("--until")
     sub.add_parser("margin-report", help="Report recorded purchase/resale economics; projections are excluded")
     sub.add_parser("discovery-report", help="Report recorded Browse query coverage, freshness, errors, and duplicate yield")
+    plan = sub.add_parser("plan", help="Rank saved candidates by visible components without changing bids")
+    plan.add_argument("--concurrency", type=int, default=4)
+    plan.add_argument("--safe-window-seconds", type=int, default=25)
     dossier = sub.add_parser("dossier", help="Export a saved prediction's evidence dossier as JSON or text")
     dossier.add_argument("item_id"); dossier.add_argument("--prediction-id", type=int)
     dossier.add_argument("--format", choices=["json", "text"], default="json")
@@ -258,6 +262,7 @@ def main(argv: list[str] | None = None):
                 prediction_id=args.prediction_id, currency=args.currency,
                 amount=Decimal(args.amount) if args.amount is not None else None,
                 fees=Decimal(args.fees), shipping=Decimal(args.shipping), refunds=Decimal(args.refunds),
+                other_costs=Decimal(args.other_costs),
                 confidence=args.confidence, supersedes_event_id=args.supersedes)
             if args.kind == "auction" and args.state in {"won", "lost", "no_sale", "cancelled", "unavailable"} and args.intent_id is not None:
                 store.settle_intent(args.intent_id, event_id)
@@ -278,9 +283,12 @@ def main(argv: list[str] | None = None):
                                        "reason": "no recorded purchase basis in resale currency"})
                         continue
                     basis = sum((Decimal(e["amount"]) for e in same_currency), Decimal(0))
-                    net = Decimal(sale["amount"]) - Decimal(sale["fees"]) - Decimal(sale["shipping"]) - Decimal(sale["refunds"]) - basis
+                    net = (Decimal(sale["amount"]) - Decimal(sale["fees"]) - Decimal(sale["shipping"])
+                           - Decimal(sale["refunds"]) - Decimal(sale["other_costs"]) - basis)
                     report.append({"item_id": item["item_id"], "currency": sale["currency"], "purchase_basis": str(basis),
-                                   "resale_gross": sale["amount"], "realized_net_profit": str(net), "status": "realized"})
+                                   "resale_gross": sale["amount"], "resale_fees": sale["fees"], "resale_shipping": sale["shipping"],
+                                   "refunds": sale["refunds"], "other_costs": sale["other_costs"],
+                                   "realized_net_profit": str(net), "status": "realized"})
                 if purchases and not resales:
                     latest = store.db.execute("SELECT fair_value,currency FROM prediction_snapshots WHERE item_id=? ORDER BY created_at DESC,id DESC LIMIT 1",
                                               (item["item_id"],)).fetchone()
@@ -357,6 +365,9 @@ def main(argv: list[str] | None = None):
                 print(dossier_data["note"])
         elif args.cmd == "discovery-report":
             print(json.dumps(store.discovery_report(), indent=2))
+        elif args.cmd == "plan":
+            print(json.dumps(portfolio_plan(store, concurrency=args.concurrency,
+                safe_window_seconds=args.safe_window_seconds), indent=2))
     finally:
         store.close()
 

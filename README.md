@@ -73,7 +73,7 @@ Do not run multiple workers against the same database. SQLite state transition p
 
 Every `analyze` and `opportunities` decision saves a prediction snapshot with the listing facts, valuation range, confidence, comp CSV inputs, policy version, risk flags, and cost assumptions. Arming stores the exact user maximum in a separate armed-decision snapshot. Snapshots and evidence events cannot be updated or deleted through the application.
 
-After an auction, reconcile the read-only official API evidence, or enter a user-confirmed result with a source reference. Record checkout basis and eventual resale separately; the resale amount is gross proceeds, while fees, shipping, and refunds are explicit deductions:
+After an auction, reconcile the read-only official API evidence, or enter a user-confirmed result with a source reference. Record checkout basis and eventual resale separately; purchase `--amount` is the actual all-in checkout total. Resale `--amount` is gross proceeds, while fees, shipping, refunds, and optional `--other-costs` are explicit deductions:
 
 ```bash
 auction-scout reconcile
@@ -87,6 +87,8 @@ auction-scout dossier ITEM_ID --format text
 `calibration` reports the saved point estimate against only later verified completed-sale references recorded as `market_reference`; its target is item price plus buyer-paid shipping, matching the estimator input. It does not treat an auction win or an estimated resale value as market truth. Cohorts below five remain marked too small. `margin-report` emits realized net profit only when actual purchase basis and a completed resale are recorded in the same currency. Unsold inventory appears with an estimated value and remains unrealized.
 
 `search` and `opportunities` also preserve each alias query run and the listing IDs it surfaced. Use `discovery-report` to inspect recorded coverage, freshness, API errors, and duplicate yield. This describes Bay Watch's query activity; total marketplace recall remains unknown. A reviewed manual auction result can settle a reservation by passing its `--intent-id` to `record-outcome`.
+
+Use `plan` to review saved candidates alongside currency-specific caps, active reservations, close timing, and worker-queue warnings. It uses visible ranking components and never edits a user maximum or submits bids.
 
 ## What makes the research layer useful
 
@@ -105,7 +107,7 @@ The starter intentionally does not scrape sold listings or claim API production 
 
 ## Database upgrades
 
-The SQLite database migrates transactionally using `PRAGMA user_version`. Version 5 adds immutable prediction snapshots, append-only learning events, explicit intent settlement references, and discovery query provenance. Opening a pre-migration database preserves its listings, intents, budget limits, and audit history. Ended unresolved intents keep their full maximum reserved until definitive evidence settles them. Back up the local database before upgrading. SQLite remains single-process.
+The SQLite database migrates transactionally using `PRAGMA user_version`. Version 6 adds immutable prediction snapshots, append-only learning events, explicit intent settlement references, discovery query provenance, and separate other-cost accounting. Opening a pre-migration database preserves its listings, intents, budget limits, and audit history. Ended unresolved intents keep their full maximum reserved until definitive evidence settles them. Back up the local database before upgrading. SQLite remains single-process.
 
 ## Tests
 

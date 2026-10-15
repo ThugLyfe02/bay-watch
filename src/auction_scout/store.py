@@ -110,7 +110,8 @@ MIGRATIONS = ((1, SCHEMA), (2, LEARNING_SCHEMA),
               (3, "ALTER TABLE bid_intents ADD COLUMN prediction_id INTEGER REFERENCES prediction_snapshots(id);"),
               (4, "ALTER TABLE bid_intents ADD COLUMN settled_at TEXT;\n"
                   "ALTER TABLE bid_intents ADD COLUMN resolution_event_id INTEGER REFERENCES learning_events(id);"),
-              (5, DISCOVERY_SCHEMA))
+              (5, DISCOVERY_SCHEMA),
+              (6, "ALTER TABLE learning_events ADD COLUMN other_costs TEXT NOT NULL DEFAULT '0';"))
 OUTCOME_STATES = {
     "auction": {"won", "lost", "no_sale", "cancelled", "unavailable", "unknown"},
     "purchase": {"recorded"},
@@ -304,7 +305,8 @@ class Store:
                               evidence_ref: str, observed_at: str | None = None, prediction_id: int | None = None,
                               currency: str | None = None, amount: Decimal | None = None,
                               fees: Decimal = Decimal("0"), shipping: Decimal = Decimal("0"),
-                              refunds: Decimal = Decimal("0"), confidence: str = "user_confirmed",
+                              refunds: Decimal = Decimal("0"), other_costs: Decimal = Decimal("0"),
+                              confidence: str = "user_confirmed",
                               details: dict | None = None, idempotency_key: str | None = None,
                               supersedes_event_id: int | None = None) -> int:
         if event_type not in OUTCOME_STATES or state not in OUTCOME_STATES[event_type]:
@@ -317,7 +319,7 @@ class Store:
             raise ValueError("purchase, resale, and market reference events require amount and currency")
         if event_type == "auction" and state in {"won", "lost", "no_sale"} and (amount is None or currency is None):
             raise ValueError("verified auction result requires observed price and currency")
-        for value in (amount, fees, shipping, refunds):
+        for value in (amount, fees, shipping, refunds, other_costs):
             if value is not None and value < 0:
                 raise ValueError("amounts and costs cannot be negative")
         currency = currency.upper() if currency else None
@@ -347,15 +349,15 @@ class Store:
         stable = {"item": item_id, "type": event_type, "state": state, "source": source,
                   "evidence_ref": evidence_ref, "prediction_id": prediction_id, "currency": currency,
                   "amount": str(amount) if amount is not None else None, "fees": str(fees),
-                  "shipping": str(shipping), "refunds": str(refunds), "details": details,
+                  "shipping": str(shipping), "refunds": str(refunds), "other_costs": str(other_costs), "details": details,
                   "supersedes": supersedes_event_id}
         key = idempotency_key or hashlib.sha256(self._canonical(stable).encode()).hexdigest()
         with self.db:
             self.db.execute("""INSERT OR IGNORE INTO learning_events
-              (item_id,prediction_id,event_type,state,currency,amount,fees,shipping,refunds,source,evidence_ref,observed_at,idempotency_key,supersedes_event_id,details_json)
-              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (item_id,prediction_id,event_type,state,currency,amount,fees,shipping,refunds,source,evidence_ref,observed_at,idempotency_key,supersedes_event_id,details_json,other_costs)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
               (item_id,prediction_id,event_type,state,currency,str(amount) if amount is not None else None,
-               str(fees),str(shipping),str(refunds),source,evidence_ref,timestamp,key,supersedes_event_id,self._canonical(details)))
+               str(fees),str(shipping),str(refunds),source,evidence_ref,timestamp,key,supersedes_event_id,self._canonical(details),str(other_costs)))
             row = self.db.execute("SELECT id FROM learning_events WHERE idempotency_key=?", (key,)).fetchone()
         return int(row["id"])
 

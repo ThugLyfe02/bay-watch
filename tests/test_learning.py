@@ -10,6 +10,7 @@ from io import StringIO
 
 from auction_scout.calibration import calibration_report
 from auction_scout.models import Listing
+from auction_scout.planning import portfolio_plan
 from auction_scout.store import SCHEMA, Store
 
 
@@ -44,7 +45,7 @@ class LearningLoopTests(unittest.TestCase):
             "2026-01-01T00:00:00+00:00", "unknown", "{}", "2025-01-01T00:00:00+00:00"))
         db.commit(); db.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.schema_version(), 5)
+        self.assertEqual(self.store.schema_version(), 6)
         self.assertIsNotNone(self.store.get_listing("old"))
         self.assertIn("prediction_id", {r["name"] for r in self.store.db.execute("PRAGMA table_info(bid_intents)")})
 
@@ -155,6 +156,38 @@ class LearningLoopTests(unittest.TestCase):
         primary = next(row for row in report["queries"] if row["query"] == "Test card")
         self.assertEqual(primary["duplicate_count"], 1)
         self.assertIn("recall is unknown", report["recall_note"])
+
+    def test_portfolio_plan_keeps_currencies_separate_and_changes_no_maxima(self):
+        end = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        self.store.record_prediction("item-1", {"prediction_at": datetime.now(timezone.utc).isoformat(),
+            "currency": "USD", "fair_value": "100", "value_low": "80", "value_high": "120",
+            "confidence": "high", "comp_count": 8, "listing": {"title": "Test card", "end_time": end},
+            "eligible": True, "bid_headroom": "30", "risk_flags": []}, decision="watch", policy_version="v1")
+        self.listing("item-eur", "EUR")
+        self.store.record_prediction("item-eur", {"prediction_at": datetime.now(timezone.utc).isoformat(),
+            "currency": "EUR", "fair_value": "100", "value_low": "80", "value_high": "120",
+            "confidence": "medium", "comp_count": 5, "listing": {"title": "Test card", "end_time": end},
+            "eligible": True, "bid_headroom": "25", "risk_flags": []}, decision="watch", policy_version="v1")
+        report = portfolio_plan(self.store)
+        self.assertEqual(set(report["by_currency"]), {"USD", "EUR"})
+        self.assertFalse(report["automatic_maximum_changes"])
+        self.assertFalse(report["bids_submitted"])
+        self.assertEqual(report["by_currency"]["USD"]["candidates"][0]["headroom"], "30")
+
+    def test_margin_report_calculates_realized_net_only_from_actual_events(self):
+        self.store.record_learning_event("item-1", event_type="purchase", state="recorded", source="receipt",
+            evidence_ref="checkout-1", currency="USD", amount=Decimal("100"))
+        self.store.record_learning_event("item-1", event_type="resale", state="recorded", source="order",
+            evidence_ref="sale-1", currency="USD", amount=Decimal("150"), fees=Decimal("10"),
+            shipping=Decimal("5"), refunds=Decimal("2"), other_costs=Decimal("3"))
+        output = StringIO()
+        with redirect_stdout(output):
+            from auction_scout.cli import main
+            main(["--db", self.path, "margin-report"])
+        import json
+        result = json.loads(output.getvalue())
+        self.assertEqual(result[0]["realized_net_profit"], "30")
+        self.assertEqual(result[0]["status"], "realized")
 
 
 if __name__ == "__main__":
