@@ -14,6 +14,9 @@ Bay Watch is an eBay-first auction research and bid workbench. It searches the o
 - Browse discovery uses an application access token; Offer bidding uses a buyer-authorized user token. They are separate OAuth flows and credentials.
 - Production mode requires `EBAY_API_ENV=production`, `ENABLE_LIVE_BIDDING=YES`, and `--live`. eBay's Buy Offer API production access is partner-gated; sandbox is the default.
 - Keep tokens in a secrets manager. Do not use your eBay password or commit credentials.
+- Prediction snapshots and verified outcome evidence are append-only. A timeout or expired local intent remains unresolved; it is never recorded as a loss.
+- `reconcile` uses a read-only Offer API request and records only a definitive ended result. It never retries or submits a bid. Production reconciliation requires `--live-read`.
+- Calibration compares saved predictions only with a later, explicitly linked `market_reference` completed sale in the same currency. Auction hammer prices and resale results remain separate targets.
 
 ## Install and run
 
@@ -66,6 +69,23 @@ auction-scout worker --live --loop
 
 Do not run multiple workers against the same database. SQLite state transition prevents double claims for a single local worker, but production deployment should use a single scheduler or move claim semantics to a transactional server database before horizontal scaling.
 
+## Closeout learning and review
+
+Every `analyze` and `opportunities` decision saves a prediction snapshot with the listing facts, valuation range, confidence, comp CSV inputs, policy version, risk flags, and cost assumptions. Arming stores the exact user maximum in a separate armed-decision snapshot. Snapshots and evidence events cannot be updated or deleted through the application.
+
+After an auction, reconcile the read-only official API evidence, or enter a user-confirmed result with a source reference. Record checkout basis and eventual resale separately; the resale amount is gross proceeds, while fees, shipping, and refunds are explicit deductions:
+
+```bash
+auction-scout reconcile
+auction-scout record-outcome ITEM_ID --kind purchase --state recorded --source receipt --evidence-ref receipt-123 --currency USD --amount 212.45
+auction-scout record-outcome ITEM_ID --kind resale --state recorded --source completed-sale --evidence-ref order-456 --currency USD --amount 310 --fees 32 --shipping 9 --refunds 0
+auction-scout calibration
+auction-scout margin-report
+auction-scout dossier ITEM_ID --format text
+```
+
+`calibration` reports the saved point estimate against only later verified completed-sale references recorded as `market_reference`; its target is item price plus buyer-paid shipping, matching the estimator input. It does not treat an auction win or an estimated resale value as market truth. Cohorts below five remain marked too small. `margin-report` emits realized net profit only when actual purchase basis and a completed resale are recorded in the same currency. Unsold inventory appears with an estimated value and remains unrealized.
+
 ## What makes the research layer useful
 
 - Search title variants separately (graded/raw, set/number, language, first edition) so near-miss nomenclature is surfaced without blending distinct assets into one valuation.
@@ -81,11 +101,15 @@ The prioritized path to a durable edge is in [ROADMAP.md](ROADMAP.md): closeout 
 
 The starter intentionally does not scrape sold listings or claim API production approval. Sold comps are imported by the user. eBay production access to the Buy APIs requires approval, and API availability/terms can change. Verify current requirements before deploying or bidding. This is not a guarantee of winning or profit.
 
+## Database upgrades
+
+The SQLite database migrates transactionally using `PRAGMA user_version`. Version 4 adds immutable prediction snapshots, append-only learning events, prediction links, and explicit intent settlement references. Opening a pre-migration database preserves its listings, intents, budget limits, and audit history. Ended unresolved intents keep their full maximum reserved until definitive evidence settles them. Back up the local database before upgrading. SQLite remains single-process.
+
 ## Tests
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-CI runs the standard-library regression suite on Python 3.11 and 3.12. Production use still needs auction closeout reconciliation and a transactional server-side store; SQLite worker mode is intentionally single-process.
+CI runs the standard-library regression suite on Python 3.11 and 3.12. The current learning loop supports read-only closeout reconciliation and user-entered evidence. The worker remains single-process; production Offer API access remains subject to eBay approval.
 

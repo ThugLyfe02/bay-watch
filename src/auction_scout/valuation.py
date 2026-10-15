@@ -26,6 +26,9 @@ def estimate_value(listing: Listing, comps: list[SaleComp], *, now: datetime | N
     for comp in comps:
         if comp.price <= 0 or comp.sold_at.tzinfo is None:
             continue
+        # A sale observed after the decision timestamp cannot inform that prediction.
+        if comp.sold_at.astimezone(timezone.utc) > now.astimezone(timezone.utc):
+            continue
         if comp.currency.upper() != listing.currency.upper():
             continue
         if not compatible_titles(listing.title, comp.title):

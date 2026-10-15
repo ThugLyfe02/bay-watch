@@ -2,21 +2,21 @@
 
 Bay Watch should win through better decisions and dependable execution, not through hidden endpoints or artificial urgency. The durable advantage is a learning loop: find more relevant auctions, reject false bargains early, and improve estimates from what actually happened.
 
-## 1. Closeout learning loop — next
+## 1. Closeout learning loop — implemented foundation; expand with evidence
 
-Record each screened candidate's evidence snapshot, estimate, confidence, ceiling, and decision. After close, reconcile the outcome and compare the estimate with the winning price. For purchases, let the user add checkout total and eventual resale proceeds so the system can learn realized net margin after fees and shipping.
+Record each screened candidate's immutable evidence snapshot, estimate, confidence, ceiling, and decision. Reconcile definitive ended status through a read-only official API call; keep missing or conflicting results unresolved. For purchases, users can append checkout basis and eventual resale proceeds so reports calculate realized net margin after fees, shipping, and refunds. The first calibration report compares predictions with later linked completed-market references and keeps auction and resale outcomes separate.
 
 **Why it compounds:** the user's own, category-specific error history reveals where the valuation model is optimistic or too conservative. Better calibration improves every later bid without raising anyone's maximum automatically.
 
-**Acceptance bar:** every prediction is reproducible from saved inputs; reconciliation distinguishes confirmed, missing, and unknown outcomes; calibration reports sample size and error bands; no automated bid increase.
+**Acceptance bar:** every prediction is reproducible from saved inputs; reconciliation distinguishes confirmed, missing, and unknown outcomes; calibration reports sample size, absolute/signed error, interval coverage, and monthly drift; no automated bid increase. Remaining work: enrich identity-match evidence and add reviewed shadow policy comparisons before proposing any estimator change.
 
-## 2. Evidence-first opportunity dossier
+## 2. Evidence-first opportunity dossier — initial export implemented
 
-Give each candidate a compact decision card: identity match, comparable sales with source and date, outlier treatment, seller and condition risks, all-in ceiling, expected headroom, confidence, and the facts that could invalidate the estimate. Surface a clear **bid / watch / pass** explanation and a time-to-close indicator.
+Export each saved prediction as JSON or readable text with listing facts, identity attributes, comp sources/dates/currencies, transparent exclusions, seller and condition risks, all-in ceiling, expected headroom, confidence, and missing facts. Expand it into the full interactive operator dossier after per-comp estimator audit trails and freshness measurements exist.
 
 **Why it compounds:** careful bidders can review a lot more candidates without trusting a mysterious score. Strong evidence is persuasive; uncertain listings remain visibly uncertain. Time pressure comes from the auction clock, never fabricated scarcity or guaranteed-return claims.
 
-**Acceptance bar:** every score links to its inputs; missing data reduces confidence; exact identity conflicts block eligibility; users can export the dossier for later review.
+**Acceptance bar:** every score links to its inputs; missing data reduces confidence; exact identity conflicts block eligibility; users can export the dossier for later review. The first CLI export is present; auction countdown and richer identity-conflict explanations remain future work.
 
 ## 3. Compliant discovery coverage
 

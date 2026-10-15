@@ -88,6 +88,11 @@ class EbayClient:
         return self._request("GET", f"/buy/browse/v1/item/{quote(item_id, safe='')}", retries=0,
                              access_token=self.application_token)
 
+    def get_bidding(self, item_id: str):
+        """Read the authenticated buyer's bidding status from the official Offer API."""
+        return self._request("GET", f"/buy/offer/v1_beta/bidding/{quote(item_id, safe='')}", retries=0,
+                             access_token=self.user_token)
+
     def place_proxy_bid(self, item_id: str, amount: Decimal, currency: str):
         # The endpoint validates bidder eligibility and auction state. Production access is gated by eBay.
         return self._request("POST", f"/buy/offer/v1_beta/bidding/{quote(item_id, safe='')}/place_proxy_bid",

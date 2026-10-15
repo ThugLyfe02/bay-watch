@@ -25,6 +25,16 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(value.confidence, "low")
         self.assertGreater(value.fair_value, Decimal("180"))
 
+    def test_estimator_excludes_sales_that_occur_after_decision_time(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        listing = Listing("future", "Pikachu #25 holo PSA 10", "url", "USD", Decimal("1"), now + timedelta(hours=1),
+                          Decimal("0"), "graded", 100, Decimal("99.0"))
+        future = SaleComp("Pikachu #25 holo PSA 10", now + timedelta(days=1), Decimal("999"), currency="USD")
+        prior = SaleComp("Pikachu #25 holo PSA 10", now - timedelta(days=1), Decimal("100"), currency="USD")
+        value = estimate_value(listing, [future, prior], now=now)
+        self.assertEqual(value.fair_value, Decimal("100"))
+        self.assertEqual(value.comp_count, 1)
+
     def test_estimator_never_mixes_currency_comp_prices(self):
         comp = SaleComp(self.listing.title, self.now, Decimal("20000"), condition="graded", currency="JPY")
         self.assertIsNone(estimate_value(self.listing, [comp], now=self.now))
