@@ -47,11 +47,30 @@ class CoreTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as f:
             store = Store(f.name)
             store.save_listing(self.listing)
+            store.set_budget("USD", Decimal("400"))
             store.arm_intent(self.listing.item_id, Decimal("150"), "USD", self.listing.end_time, 8)
             with self.assertRaises(ValueError): store.arm_intent(self.listing.item_id, Decimal("160"), "USD", self.listing.end_time, 8)
             row = store.armed_intents()[0]
             store.transition_intent(row["id"], "armed", "submitting", {})
             with self.assertRaises(ValueError): store.transition_intent(row["id"], "armed", "submitting", {})
+            store.close()
+
+    def test_portfolio_budget_reserves_full_bid_max_and_blocks_overcommit(self):
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            store.save_listing(self.listing)
+            store.set_budget("USD", Decimal("200"))
+            store.arm_intent(self.listing.item_id, Decimal("150"), "USD", self.listing.end_time, 8)
+            status = store.budget_status("USD")
+            self.assertEqual(status["reserved"], Decimal("150.0"))
+            self.assertEqual(status["available"], Decimal("50.0"))
+            second = Listing("ebay:2", "Pokemon Vaporeon holo PSA 9", "https://example.test/2", "USD",
+                             Decimal("20"), self.now + timedelta(minutes=8), Decimal("0"), "graded")
+            store.save_listing(second)
+            with self.assertRaisesRegex(ValueError, "exposure cap exceeded"):
+                store.arm_intent(second.item_id, Decimal("60"), "USD", second.end_time, 8)
+            with self.assertRaisesRegex(ValueError, "cannot set cap below"):
+                store.set_budget("USD", Decimal("100"))
             store.close()
 
     def test_screen_ranks_eligible_headroom_and_excludes_expired_or_unmatched(self):

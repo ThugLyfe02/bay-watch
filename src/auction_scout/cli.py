@@ -50,6 +50,10 @@ def main(argv: list[str] | None = None):
     sub.add_parser("intents", help="List armed bid intents")
     c = sub.add_parser("cancel", help="Cancel an armed bid intent")
     c.add_argument("intent_id", type=int)
+    bs = sub.add_parser("budget-set", help="Set the currency-specific open-auction exposure cap")
+    bs.add_argument("--currency", default="USD"); bs.add_argument("--amount", required=True)
+    bg = sub.add_parser("budget-status", help="Show portfolio cap, reserved exposure, and available headroom")
+    bg.add_argument("--currency", default="USD")
     w = sub.add_parser("worker", help="Submit due intents once, or poll when --loop is set")
     w.add_argument("--loop", action="store_true"); w.add_argument("--poll-seconds", type=float, default=1.0)
     w.add_argument("--live", action="store_true", help="Required for production API calls")
@@ -111,6 +115,14 @@ def main(argv: list[str] | None = None):
             for r in store.armed_intents(): print(json.dumps(dict(r)))
         elif args.cmd == "cancel":
             store.cancel_intent(args.intent_id); print("Cancelled.")
+        elif args.cmd == "budget-set":
+            currency = args.currency.upper()
+            amount = Decimal(args.amount)
+            store.set_budget(currency, amount)
+            print(f"Set {currency} open-auction exposure cap to {amount:.2f}")
+        elif args.cmd == "budget-status":
+            status = store.budget_status(args.currency.upper())
+            print(json.dumps({k: str(v) if v is not None else None for k, v in status.items()}, indent=2))
         elif args.cmd == "worker":
             env = os.getenv("EBAY_API_ENV", "sandbox").casefold()
             if env == "production" and (not args.live or os.getenv("ENABLE_LIVE_BIDDING") != "YES"):

@@ -26,6 +26,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
  id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, action TEXT NOT NULL,
  item_id TEXT, details_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS budget_limits (
+ currency TEXT PRIMARY KEY, amount TEXT NOT NULL CHECK(length(amount) > 0),
+ updated_at TEXT NOT NULL
+);
 """
 
 
@@ -36,6 +40,11 @@ class Store:
         self.db.executescript(SCHEMA)
 
     def close(self): self.db.close()
+
+    def _reserved_exposure(self, currency: str, now_iso: str) -> Decimal:
+        rows = self.db.execute("SELECT max_amount FROM bid_intents WHERE currency=? AND status IN ('armed','submitting','submitted','unknown') AND end_time>?",
+                               (currency, now_iso)).fetchall()
+        return sum((Decimal(r["max_amount"]) for r in rows), Decimal("0"))
 
     def audit(self, action: str, item_id: str | None, details: dict):
         with self.db:
@@ -65,13 +74,51 @@ class Store:
         now = datetime.now(timezone.utc)
         submit_before = end_time.astimezone(timezone.utc).timestamp() - lead_seconds
         submit_before_dt = datetime.fromtimestamp(submit_before, timezone.utc)
-        with self.db:
+        # Serialize budget read + reservation so concurrent CLI invocations cannot over-allocate.
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            limit_row = self.db.execute("SELECT amount FROM budget_limits WHERE currency=?", (currency,)).fetchone()
+            if not limit_row:
+                raise ValueError(f"set a {currency} portfolio exposure cap with `auction-scout budget-set --currency {currency} --amount ...` before arming bids")
+            reserved = self._reserved_exposure(currency, now.isoformat())
+            cap = Decimal(limit_row["amount"])
+            if max_amount <= 0:
+                raise ValueError("maximum bid must be positive")
+            if reserved + max_amount > cap:
+                raise ValueError(f"portfolio exposure cap exceeded: {reserved:.2f} reserved + {max_amount:.2f} requested > {cap:.2f} {currency}")
             # Only one active intent per item; callers must explicitly cancel before replacing.
             if self.db.execute("SELECT 1 FROM bid_intents WHERE item_id=? AND status='armed'", (item_id,)).fetchone():
                 raise ValueError("an armed intent already exists for this item; cancel it before replacing")
             self.db.execute("INSERT INTO bid_intents(item_id,max_amount,currency,end_time,status,submit_before,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
                             (item_id, str(max_amount), currency, end_time.isoformat(), "armed", submit_before_dt.isoformat(), now.isoformat(), now.isoformat()))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
         self.audit("bid_intent_armed", item_id, {"max_amount": str(max_amount), "currency": currency, "submit_before": submit_before_dt.isoformat()})
+
+    def set_budget(self, currency: str, amount: Decimal):
+        if amount <= 0: raise ValueError("portfolio cap must be positive")
+        now = datetime.now(timezone.utc).isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            reserved = self._reserved_exposure(currency, now)
+            if reserved > amount:
+                raise ValueError(f"cannot set cap below currently reserved exposure ({reserved:.2f} {currency})")
+            self.db.execute("INSERT INTO budget_limits(currency,amount,updated_at) VALUES(?,?,?) ON CONFLICT(currency) DO UPDATE SET amount=excluded.amount,updated_at=excluded.updated_at",
+                            (currency, str(amount), now))
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            raise
+        self.audit("portfolio_cap_set", None, {"currency": currency, "amount": str(amount)})
+
+    def budget_status(self, currency: str):
+        now = datetime.now(timezone.utc).isoformat()
+        limit_row = self.db.execute("SELECT amount FROM budget_limits WHERE currency=?", (currency,)).fetchone()
+        reserved = self._reserved_exposure(currency, now)
+        cap = Decimal(limit_row["amount"]) if limit_row else None
+        return {"currency": currency, "cap": cap, "reserved": reserved, "available": cap - reserved if cap is not None else None}
 
     def due_intents(self, now: datetime):
         return self.db.execute("SELECT * FROM bid_intents WHERE status='armed' AND submit_before<=? ORDER BY submit_before", (now.isoformat(),)).fetchall()

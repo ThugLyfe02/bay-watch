@@ -1,5 +1,3 @@
-# Auction Scout
-
 # Bay Watch
 
 Bay Watch is an eBay-first auction research and bid workbench. It searches the official Browse API, scores a listing against user-supplied sold comps, calculates a conservative all-in ceiling, and can schedule one exact proxy-bid maximum through eBay's official Offer API.
@@ -9,6 +7,7 @@ Bay Watch is an eBay-first auction research and bid workbench. It searches the o
 - Uses official eBay Buy APIs only. No page scraping, private endpoints, CAPTCHA handling, browser/password automation, or anti-bot evasion.
 - No valuation is fabricated: `analyze` requires a sold-comps CSV and visibly reports confidence and comp count.
 - A bid intent requires the exact item ID and exact maximum amount. The maximum cannot be escalated by the worker.
+- Each currency requires an explicit open-auction exposure cap before arming. Budget reservations are atomic across local CLI attempts and include the full maximum bid for active auctions.
 - Worker claims an intent before network I/O and never auto-retries a bid with an ambiguous outcome. Verify the account on eBay before taking any further action.
 - Production mode requires `EBAY_API_ENV=production`, `ENABLE_LIVE_BIDDING=YES`, and `--live`. eBay's Buy Offer API production access is partner-gated; sandbox is the default.
 - Keep tokens in a secrets manager. Do not use your eBay password or commit credentials.
@@ -34,10 +33,12 @@ title,sold_at,price,shipping,condition,source
 Pokemon Umbreon holo PSA 7,2026-09-12T18:00:00Z,210.00,0,graded,manual
 ```
 
-Then analyze and arm a hard ceiling:
+Then analyze, set the total open-auction exposure cap, and arm a hard ceiling:
 
 ```bash
 auction-scout analyze 'v1|ITEM_ID|0' --comps sold-comps.csv --tax 0.08875 --buffer 0.10
+auction-scout budget-set --currency USD --amount 500
+auction-scout budget-status --currency USD
 auction-scout arm 'v1|ITEM_ID|0' --max 175.00 --currency USD --lead-seconds 8 --confirm 'v1|ITEM_ID|0'
 auction-scout intents
 auction-scout worker --loop
@@ -79,5 +80,5 @@ The starter intentionally does not scrape sold listings or claim API production 
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-CI runs the standard-library regression suite on Python 3.11 and 3.12. Before production use, add account-level spend reservation and auction closeout reconciliation in a transactional server-side store; SQLite worker mode is intentionally single-process.
+CI runs the standard-library regression suite on Python 3.11 and 3.12. Production use still needs auction closeout reconciliation and a transactional server-side store; SQLite worker mode is intentionally single-process.
 
