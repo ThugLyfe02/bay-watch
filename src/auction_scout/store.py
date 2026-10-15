@@ -82,10 +82,35 @@ CREATE TRIGGER learning_events_no_delete BEFORE DELETE ON learning_events
  BEGIN SELECT RAISE(ABORT, 'learning events are append-only'); END;
 """
 
+DISCOVERY_SCHEMA = """
+CREATE TABLE discovery_runs (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ query TEXT NOT NULL,
+ source TEXT NOT NULL,
+ searched_at TEXT NOT NULL,
+ status TEXT NOT NULL CHECK(status IN ('ok','error')),
+ result_count INTEGER NOT NULL CHECK(result_count >= 0),
+ unique_count INTEGER NOT NULL CHECK(unique_count >= 0),
+ duplicate_count INTEGER NOT NULL CHECK(duplicate_count >= 0),
+ duration_ms INTEGER NOT NULL CHECK(duration_ms >= 0),
+ error_class TEXT
+);
+CREATE INDEX discovery_runs_query_time ON discovery_runs(query,searched_at);
+CREATE TABLE discovery_hits (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ run_id INTEGER NOT NULL REFERENCES discovery_runs(id),
+ item_id TEXT NOT NULL REFERENCES listings(item_id),
+ result_position INTEGER NOT NULL CHECK(result_position >= 0),
+ UNIQUE(run_id,item_id)
+);
+CREATE INDEX discovery_hits_item ON discovery_hits(item_id,run_id);
+"""
+
 MIGRATIONS = ((1, SCHEMA), (2, LEARNING_SCHEMA),
               (3, "ALTER TABLE bid_intents ADD COLUMN prediction_id INTEGER REFERENCES prediction_snapshots(id);"),
               (4, "ALTER TABLE bid_intents ADD COLUMN settled_at TEXT;\n"
-                  "ALTER TABLE bid_intents ADD COLUMN resolution_event_id INTEGER REFERENCES learning_events(id);"))
+                  "ALTER TABLE bid_intents ADD COLUMN resolution_event_id INTEGER REFERENCES learning_events(id);"),
+              (5, DISCOVERY_SCHEMA))
 OUTCOME_STATES = {
     "auction": {"won", "lost", "no_sale", "cancelled", "unavailable", "unknown"},
     "purchase": {"recorded"},
@@ -131,6 +156,36 @@ class Store:
 
     def schema_version(self) -> int:
         return int(self.db.execute("PRAGMA user_version").fetchone()[0])
+
+    def record_discovery_run(self, query: str, results: list[Listing], *, status: str,
+                             duration_ms: int, error_class: str | None = None,
+                             source: str = "ebay_browse_api") -> int:
+        if status not in {"ok", "error"} or not query.strip() or duration_ms < 0:
+            raise ValueError("invalid discovery run")
+        item_ids = [item.item_id for item in results]
+        unique_ids = list(dict.fromkeys(item_ids))
+        when = datetime.now(timezone.utc).isoformat()
+        with self.db:
+            cur = self.db.execute("""INSERT INTO discovery_runs(query,source,searched_at,status,result_count,unique_count,duplicate_count,duration_ms,error_class)
+              VALUES(?,?,?,?,?,?,?,?,?)""", (query,source,when,status,len(item_ids),len(unique_ids),
+              len(item_ids)-len(unique_ids),duration_ms,error_class))
+            run_id = int(cur.lastrowid)
+            for position, item in enumerate(results):
+                self.save_listing(item)
+                self.db.execute("INSERT OR IGNORE INTO discovery_hits(run_id,item_id,result_position) VALUES(?,?,?)",
+                                (run_id,item.item_id,position))
+        return run_id
+
+    def discovery_report(self):
+        runs = self.db.execute("SELECT * FROM discovery_runs ORDER BY searched_at DESC,id DESC").fetchall()
+        grouped = self.db.execute("""SELECT query,COUNT(*) AS run_count,SUM(result_count) AS result_count,
+          SUM(unique_count) AS unique_count,SUM(duplicate_count) AS duplicate_count,
+          SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS error_count,
+          MAX(searched_at) AS last_searched FROM discovery_runs GROUP BY query ORDER BY query""").fetchall()
+        return {"source": "official Browse API query runs", "run_count": len(runs),
+                "distinct_listings": self.db.execute("SELECT COUNT(DISTINCT item_id) FROM discovery_hits").fetchone()[0],
+                "queries": [dict(r) for r in grouped], "recent_runs": [dict(r) for r in runs[:50]],
+                "recall_note": "Coverage describes recorded query activity and results; total marketplace recall is unknown."}
 
     def close(self): self.db.close()
 

@@ -44,7 +44,7 @@ class LearningLoopTests(unittest.TestCase):
             "2026-01-01T00:00:00+00:00", "unknown", "{}", "2025-01-01T00:00:00+00:00"))
         db.commit(); db.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.schema_version(), 4)
+        self.assertEqual(self.store.schema_version(), 5)
         self.assertIsNotNone(self.store.get_listing("old"))
         self.assertIn("prediction_id", {r["name"] for r in self.store.db.execute("PRAGMA table_info(bid_intents)")})
 
@@ -144,6 +144,17 @@ class LearningLoopTests(unittest.TestCase):
             evidence_ref="official-history", currency="USD", amount=Decimal("80"))
         self.store.settle_intent(cur.lastrowid, event)
         self.assertEqual(self.store.budget_status("USD")["reserved"], Decimal("0"))
+
+    def test_discovery_provenance_preserves_alias_runs_and_duplicate_yield(self):
+        listing = self.store.get_listing("item-1")
+        self.store.record_discovery_run("Test card", [listing, listing], status="ok", duration_ms=12)
+        self.store.record_discovery_run("test-card alt", [listing], status="ok", duration_ms=9)
+        report = self.store.discovery_report()
+        self.assertEqual(report["run_count"], 2)
+        self.assertEqual(report["distinct_listings"], 1)
+        primary = next(row for row in report["queries"] if row["query"] == "Test card")
+        self.assertEqual(primary["duplicate_count"], 1)
+        self.assertIn("recall is unknown", report["recall_note"])
 
 
 if __name__ == "__main__":

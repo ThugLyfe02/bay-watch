@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import time
+from time import monotonic
 
 from .ebay import EbayClient, EbayError
 from .models import SaleComp
@@ -95,6 +96,7 @@ def main(argv: list[str] | None = None):
     cal = sub.add_parser("calibration", help="Report chronological valuation calibration against verified later sale references")
     cal.add_argument("--since"); cal.add_argument("--until")
     sub.add_parser("margin-report", help="Report recorded purchase/resale economics; projections are excluded")
+    sub.add_parser("discovery-report", help="Report recorded Browse query coverage, freshness, errors, and duplicate yield")
     dossier = sub.add_parser("dossier", help="Export a saved prediction's evidence dossier as JSON or text")
     dossier.add_argument("item_id"); dossier.add_argument("--prediction-id", type=int)
     dossier.add_argument("--format", choices=["json", "text"], default="json")
@@ -106,7 +108,15 @@ def main(argv: list[str] | None = None):
             queries = list(dict.fromkeys([args.query, *args.variant]))
             by_id = {}
             for query in queries:
-                for item in client.search_auctions(query, args.limit):
+                started = monotonic()
+                try:
+                    results = client.search_auctions(query, args.limit)
+                except EbayError as exc:
+                    store.record_discovery_run(query, [], status="error", duration_ms=int((monotonic()-started)*1000),
+                        error_class="rate_limited" if exc.status_code == 429 else "api_error")
+                    raise
+                store.record_discovery_run(query, results, status="ok", duration_ms=int((monotonic()-started)*1000))
+                for item in results:
                     by_id.setdefault(item.item_id, item)
             listings = list(by_id.values())
             for item in listings:
@@ -120,7 +130,15 @@ def main(argv: list[str] | None = None):
             client = EbayClient()
             by_id = {}
             for query in queries:
-                for item in client.search_auctions(query, args.limit):
+                started = monotonic()
+                try:
+                    results = client.search_auctions(query, args.limit)
+                except EbayError as exc:
+                    store.record_discovery_run(query, [], status="error", duration_ms=int((monotonic()-started)*1000),
+                        error_class="rate_limited" if exc.status_code == 429 else "api_error")
+                    raise
+                store.record_discovery_run(query, results, status="ok", duration_ms=int((monotonic()-started)*1000))
+                for item in results:
                     by_id.setdefault(item.item_id, item)
             listings = list(by_id.values())
             for item in listings: store.save_listing(item)
@@ -337,6 +355,8 @@ def main(argv: list[str] | None = None):
                 print("Risks: " + (", ".join(dossier_data["risks"]) or "none recorded"))
                 print("Missing facts: " + (", ".join(missing) or "none flagged"))
                 print(dossier_data["note"])
+        elif args.cmd == "discovery-report":
+            print(json.dumps(store.discovery_report(), indent=2))
     finally:
         store.close()
 

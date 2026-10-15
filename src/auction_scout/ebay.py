@@ -13,7 +13,10 @@ from .models import Listing
 from .money import format_money
 
 
-class EbayError(RuntimeError): pass
+class EbayError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class EbayClient:
@@ -53,7 +56,7 @@ class EbayClient:
                 if e.code == 429 and attempt < retries:
                     time.sleep(min(2 ** attempt, 4)); continue
                 # Never retry bid submission on 5xx/ambiguous responses.
-                raise EbayError(f"eBay returned HTTP {e.code}: {message}") from e
+                raise EbayError(f"eBay returned HTTP {e.code}: {message}", status_code=e.code) from e
             except (URLError, TimeoutError) as e:
                 if method != "POST" and attempt < retries:
                     time.sleep(min(2 ** attempt, 4)); continue

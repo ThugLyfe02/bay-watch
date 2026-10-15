@@ -18,13 +18,13 @@ Export each saved prediction as JSON or readable text with listing facts, identi
 
 **Acceptance bar:** every score links to its inputs; missing data reduces confidence; exact identity conflicts block eligibility; users can export the dossier for later review. The first CLI export is present; auction countdown and richer identity-conflict explanations remain future work.
 
-## 3. Compliant discovery coverage
+## 3. Compliant discovery coverage — query provenance implemented
 
-Expand saved query profiles and alias sets, then track which searches found each listing and which search gaps produced missed candidates. Add sources only through documented, permitted APIs or user-provided data, with source and freshness recorded on every observation.
+Track each Browse query/alias run and every listing ID it returned, then report run freshness, API error class, and duplicate yield. Users can provide title aliases directly. Saved reusable category profiles and evidence-backed missed-search feedback remain future work; total marketplace recall is explicitly unknown.
 
 **Why it compounds:** broad title vocabulary and category-specific language expose under-described listings earlier, while coverage telemetry makes search improvements measurable.
 
-**Acceptance bar:** deduplicated listings retain all matching query provenance; API limits and freshness are visible; no scraping, private endpoints, or anti-bot bypass.
+**Acceptance bar:** deduplicated listings retain all matching query provenance; API errors and freshness are visible; no scraping, private endpoints, or anti-bot bypass. Current query coverage is measured only from official Browse results and does not claim complete recall.
 
 ## 4. Portfolio-aware close and capital allocator
 
