@@ -30,7 +30,7 @@ Expand saved query profiles and alias sets, then track which searches found each
 
 When many auctions overlap, rank due intents by estimated risk-adjusted surplus and available capital, while preserving the user's explicit per-item maximum and currency exposure cap. Add closeout reconciliation before releasing an unresolved reservation. Show any intents that may miss their close because the configured worker capacity is insufficient.
 
-**Why it compounds:** capital and API capacity go to the best-supported opportunities, not simply the earliest rows in a queue. Concurrency warnings in the current worker are the first reliability step.
+**Why it compounds:** capital and API capacity go to the best-supported opportunities, not simply the earliest rows in a queue. The worker now refreshes each listing before bidding and warns when due work exceeds its concurrency; scheduling should later use measured latency and expected risk-adjusted surplus.
 
 **Acceptance bar:** allocations are deterministic and auditable; hard caps cannot be exceeded; unknown bid outcomes retain their reservation until verified; overload is visible before a close window.
 

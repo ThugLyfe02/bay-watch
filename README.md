@@ -10,6 +10,8 @@ Bay Watch is an eBay-first auction research and bid workbench. It searches the o
 - Each currency requires an explicit open-auction exposure cap before arming. Budget reservations are atomic across local CLI attempts and include the full maximum bid for active auctions.
 - Sold comps with a different currency are excluded. Bid rounding and amount precision follow currency minor units, including zero- and three-decimal currencies.
 - Worker claims an intent before network I/O and never auto-retries a bid with an ambiguous outcome. Verify the account on eBay before taking any further action.
+- Before the one-way bid request, the worker refreshes the exact item through Browse and checks auction state, item ID, currency, minimum bid, Buy It Now ceiling, and remaining time. A failed preflight means no bid POST was sent.
+- Browse discovery uses an application access token; Offer bidding uses a buyer-authorized user token. They are separate OAuth flows and credentials.
 - Production mode requires `EBAY_API_ENV=production`, `ENABLE_LIVE_BIDDING=YES`, and `--live`. eBay's Buy Offer API production access is partner-gated; sandbox is the default.
 - Keep tokens in a secrets manager. Do not use your eBay password or commit credentials.
 
@@ -20,7 +22,8 @@ cd auction-scout
 python -m venv .venv && . .venv/bin/activate
 pip install -e .
 cp .env.example .env  # populate values in your shell or a local env loader
-export EBAY_USER_ACCESS_TOKEN='...'
+export EBAY_APPLICATION_ACCESS_TOKEN='...' # client-credentials grant for Browse
+export EBAY_USER_ACCESS_TOKEN='...'        # buyer authorization for Offer bids
 export EBAY_API_ENV=sandbox
 auction-scout search "2000 Japanese Umbreon holo PSA 7" --limit 25
 # Search alternate catalog wording and deduplicate by item ID:
@@ -40,7 +43,7 @@ Then analyze, set the total open-auction exposure cap, and arm a hard ceiling:
 auction-scout analyze 'v1|ITEM_ID|0' --comps sold-comps.csv --tax 0.08875 --buffer 0.10
 auction-scout budget-set --currency USD --amount 500
 auction-scout budget-status --currency USD
-auction-scout arm 'v1|ITEM_ID|0' --max 175.00 --currency USD --lead-seconds 20 --confirm 'v1|ITEM_ID|0'
+auction-scout arm 'v1|ITEM_ID|0' --max 175.00 --currency USD --lead-seconds 30 --confirm 'v1|ITEM_ID|0'
 auction-scout intents
 auction-scout worker --loop
 ```
@@ -53,7 +56,7 @@ auction-scout opportunities "Umbreon PSA 7" --variant "Japanese Umbreon grade 7"
 
 Only medium/high confidence matches with a nonnegative ceiling headroom and a specified condition are marked eligible. The report still includes lower-confidence candidates as watch-only so thin evidence is visible.
 
-The worker posts the eBay proxy bid at the configured lead time. The 12-second minimum includes the API timeout plus polling and scheduling margin. Simultaneous intents use bounded parallel submission; an oversized due batch is warned because queued requests may miss close. eBay's proxy bidding system accepts the buyer's maximum and bids only as needed. Do not enter an amount above your personal all-in budget. For a production account, after approval:
+The worker refreshes each listing through Browse immediately before the bid, then posts the exact user-authored maximum through Offer. Its 25-second minimum lead leaves room for the preflight request, bid request, polling, and scheduling margin. A stale or unsafe listing fails closed without sending a bid. Simultaneous intents use bounded parallel submission; an oversized due batch is warned because queued requests may miss close. eBay's proxy bidding system accepts the buyer's maximum and bids only as needed. Do not enter an amount above your personal all-in budget. For a production account, after approval:
 
 ```bash
 export EBAY_API_ENV=production

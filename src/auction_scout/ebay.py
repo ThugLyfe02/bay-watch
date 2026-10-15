@@ -20,17 +20,22 @@ class EbayClient:
     """Thin official eBay Buy API client. No HTML scraping, browser automation, or credential capture."""
     ROOTS = {"sandbox": "https://api.sandbox.ebay.com", "production": "https://api.ebay.com"}
 
-    def __init__(self, token: str | None = None, env: str | None = None, marketplace: str | None = None):
-        self.token = token or os.getenv("EBAY_USER_ACCESS_TOKEN", "")
+    def __init__(self, token: str | None = None, application_token: str | None = None,
+                 env: str | None = None, marketplace: str | None = None):
+        # Browse uses an application token; Offer bidding uses the buyer's user token.
+        self.user_token = token or os.getenv("EBAY_USER_ACCESS_TOKEN", "")
+        self.application_token = application_token or os.getenv("EBAY_APPLICATION_ACCESS_TOKEN", "")
         self.env = (env or os.getenv("EBAY_API_ENV", "sandbox")).casefold()
         self.marketplace = marketplace or os.getenv("EBAY_MARKETPLACE", "EBAY_US")
         if self.env not in self.ROOTS: raise ValueError("EBAY_API_ENV must be sandbox or production")
-        if not self.token: raise ValueError("EBAY_USER_ACCESS_TOKEN is required")
         self.root = self.ROOTS[self.env]
 
-    def _request(self, method: str, path: str, *, query: dict | None = None, body: dict | None = None, retries: int = 2):
+    def _request(self, method: str, path: str, *, query: dict | None = None, body: dict | None = None,
+                 retries: int = 2, access_token: str | None = None):
+        if not access_token:
+            raise EbayError("the OAuth token required for this eBay API call is missing")
         url = self.root + path + (("?" + urlencode(query)) if query else "")
-        headers = {"Authorization": "Bearer " + self.token, "Accept": "application/json",
+        headers = {"Authorization": "Bearer " + access_token, "Accept": "application/json",
                    "X-EBAY-C-MARKETPLACE-ID": self.marketplace}
         data = None
         if body is not None:
@@ -56,7 +61,8 @@ class EbayClient:
 
     def search_auctions(self, query: str, limit: int = 30) -> list[Listing]:
         payload = self._request("GET", "/buy/browse/v1/item_summary/search",
-                                query={"q": query, "filter": "buyingOptions:{AUCTION}", "limit": min(max(limit, 1), 200)})
+                                query={"q": query, "filter": "buyingOptions:{AUCTION}", "limit": min(max(limit, 1), 200)},
+                                access_token=self.application_token)
         out = []
         for row in payload.get("itemSummaries", []):
             price = row.get("currentBidPrice") or row.get("price") or {}
@@ -76,8 +82,14 @@ class EbayClient:
                 location=(row.get("itemLocation") or {}).get("city")))
         return out
 
+    def get_item(self, item_id: str):
+        """Fetch fresh public listing state through the official Browse API."""
+        return self._request("GET", f"/buy/browse/v1/item/{quote(item_id, safe='')}", retries=0,
+                             access_token=self.application_token)
+
     def place_proxy_bid(self, item_id: str, amount: Decimal, currency: str):
         # The endpoint validates bidder eligibility and auction state. Production access is gated by eBay.
         return self._request("POST", f"/buy/offer/v1_beta/bidding/{quote(item_id, safe='')}/place_proxy_bid",
-                             body={"maxAmount": {"currency": currency, "value": format_money(amount, currency)}}, retries=0)
+                             body={"maxAmount": {"currency": currency, "value": format_money(amount, currency)}},
+                             retries=0, access_token=self.user_token)
 

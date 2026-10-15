@@ -76,9 +76,16 @@ class CoreTests(unittest.TestCase):
 
     def test_worker_submits_simultaneous_closes_in_parallel(self):
         class ParallelClient:
-            def __init__(self):
+            def __init__(self, end_time):
                 self.barrier = Barrier(2)
                 self.calls = []
+                self.end_time = end_time
+
+            def get_item(self, item_id):
+                return {"itemId": item_id, "buyingOptions": ["AUCTION"],
+                        "itemEndDate": self.end_time.isoformat(),
+                        "minimumPriceToBid": {"currency": "USD", "value": "100"},
+                        "currentBidPrice": {"currency": "USD", "value": "90"}}
 
             def place_proxy_bid(self, item_id, amount, currency):
                 self.calls.append((item_id, amount, currency))
@@ -88,19 +95,87 @@ class CoreTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile() as f:
             store = Store(f.name)
             store.set_budget("USD", Decimal("400"))
-            end_time = datetime.now(timezone.utc) + timedelta(seconds=10)
+            start = datetime.now(timezone.utc)
+            end_time = start + timedelta(seconds=50)
             for item_id in ("ebay:parallel-1", "ebay:parallel-2"):
                 listing = Listing(item_id, self.listing.title, f"https://example.test/{item_id}", "USD",
                                   Decimal("100"), end_time, Decimal("0"), "graded")
                 store.save_listing(listing)
-                store.arm_intent(item_id, Decimal("150"), "USD", end_time, 12)
+                store.arm_intent(item_id, Decimal("150"), "USD", end_time, 30)
 
-            client = ParallelClient()
-            submitted, unknown = submit_due_intents(store, client, concurrency=2)
+            client = ParallelClient(end_time)
+            submitted, unknown = submit_due_intents(store, client, concurrency=2, now=start + timedelta(seconds=21))
             self.assertEqual((submitted, unknown), (2, 0))
             self.assertEqual(len(client.calls), 2)
             self.assertEqual([row["status"] for row in store.db.execute("SELECT status FROM bid_intents ORDER BY id")],
                              ["submitted", "submitted"])
+            store.close()
+
+    def test_worker_preflight_blocks_when_live_minimum_exceeds_hard_cap(self):
+        class StalePriceClient:
+            def __init__(self, end_time):
+                self.end_time = end_time
+                self.bid_calls = 0
+
+            def get_item(self, item_id):
+                return {"itemId": item_id, "buyingOptions": ["AUCTION"],
+                        "itemEndDate": self.end_time.isoformat(),
+                        "minimumPriceToBid": {"currency": "USD", "value": "160"},
+                        "currentBidPrice": {"currency": "USD", "value": "150"}}
+
+            def place_proxy_bid(self, *args):
+                self.bid_calls += 1
+                raise AssertionError("preflight should prevent the bid request")
+
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            start = datetime.now(timezone.utc)
+            end_time = start + timedelta(seconds=50)
+            listing = Listing("ebay:stale", self.listing.title, "https://example.test/stale", "USD",
+                              Decimal("100"), end_time, Decimal("0"), "graded")
+            store.save_listing(listing)
+            store.set_budget("USD", Decimal("200"))
+            store.arm_intent(listing.item_id, Decimal("155"), "USD", end_time, 30)
+            client = StalePriceClient(end_time)
+
+            submitted, unknown = submit_due_intents(store, client, now=start + timedelta(seconds=21))
+
+            self.assertEqual((submitted, unknown), (0, 0))
+            self.assertEqual(client.bid_calls, 0)
+            self.assertEqual(store.db.execute("SELECT status FROM bid_intents").fetchone()["status"], "failed")
+            store.close()
+
+    def test_worker_preflight_blocks_listing_identity_mismatch(self):
+        class WrongItemClient:
+            def __init__(self, end_time):
+                self.end_time = end_time
+                self.bid_calls = 0
+
+            def get_item(self, item_id):
+                return {"itemId": "different-item", "buyingOptions": ["AUCTION"],
+                        "itemEndDate": self.end_time.isoformat(),
+                        "minimumPriceToBid": {"currency": "USD", "value": "100"}}
+
+            def place_proxy_bid(self, *args):
+                self.bid_calls += 1
+                raise AssertionError("preflight should prevent the bid request")
+
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            start = datetime.now(timezone.utc)
+            end_time = start + timedelta(seconds=50)
+            listing = Listing("ebay:expected", self.listing.title, "https://example.test/expected", "USD",
+                              Decimal("100"), end_time, Decimal("0"), "graded")
+            store.save_listing(listing)
+            store.set_budget("USD", Decimal("200"))
+            store.arm_intent(listing.item_id, Decimal("150"), "USD", end_time, 30)
+            client = WrongItemClient(end_time)
+
+            submitted, unknown = submit_due_intents(store, client, now=start + timedelta(seconds=21))
+
+            self.assertEqual((submitted, unknown), (0, 0))
+            self.assertEqual(client.bid_calls, 0)
+            self.assertEqual(store.db.execute("SELECT status FROM bid_intents").fetchone()["status"], "failed")
             store.close()
 
     def test_portfolio_budget_reserves_full_bid_max_and_blocks_overcommit(self):
