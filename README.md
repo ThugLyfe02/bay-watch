@@ -67,6 +67,7 @@ Do not run multiple workers against the same database. SQLite state transition p
 - Search title variants separately (graded/raw, set/number, language, first edition) so near-miss nomenclature is surfaced without blending distinct assets into one valuation.
 - Comp matching uses transparent token overlap, recency decay, condition penalty, and median/MAD outlier resistance. Treat it as triage; authenticate and inspect the item yourself.
 - For Pokémon cards, known mismatches in card number, grading company, grade, language, edition, and holo variant are excluded before valuation. Missing identity details remain a confidence limitation rather than being silently inferred.
+- Risk flags now change the bid ceiling: thin comps apply a 12% haircut, incomplete seller data 8%, seller feedback below 25 adds 8%, seller score below 98% adds 10%, and unknown condition adds 12%. Haircuts compound, are reported, and make seller/condition-uncertain candidates watch-only.
 - Low sample count is explicit. For cards, include grading company, grade, language, edition, card number, and variant in comp titles. Add more columns or a typed catalog before using this with other collectibles.
 - Seller score, feedback count, condition, shipping, tax, buyer fees, and uncertainty should all reduce the ceiling. Shipping and tax model are simplified and should be calibrated to marketplace checkout totals.
 

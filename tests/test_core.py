@@ -12,7 +12,7 @@ class CoreTests(unittest.TestCase):
     def setUp(self):
         self.now = datetime.now(timezone.utc)
         self.listing = Listing("ebay:1", "Pokemon Umbreon holo PSA 7", "https://example.test/1", "USD",
-                               Decimal("100"), self.now + timedelta(minutes=5), Decimal("10"), "graded")
+                               Decimal("100"), self.now + timedelta(minutes=5), Decimal("10"), "graded", 1000, Decimal("99.9"))
 
     def test_estimator_uses_similar_recent_comps_and_marks_thin_data(self):
         comps = [SaleComp("Pokemon Umbreon holo PSA 7", self.now - timedelta(days=i), Decimal("180") + i, condition="graded") for i in (1, 3, 5)]
@@ -42,6 +42,17 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(opportunity.all_in_cap, Decimal("162.00"))
         self.assertEqual(opportunity.max_hammer, Decimal("133.33"))
         self.assertLess(opportunity.max_hammer + self.listing.shipping, opportunity.all_in_cap)
+
+    def test_unverified_seller_risk_reduces_ceiling_and_blocks_eligibility(self):
+        listing = Listing("risk", self.listing.title, self.listing.url, "USD", Decimal("50"),
+                          self.listing.end_time, Decimal("0"), "graded")
+        value = Valuation(Decimal("200"), Decimal("180"), Decimal("220"), 10, "medium")
+        clean = analyze(self.listing, value, reserve_buffer=Decimal("0"))
+        uncertain = analyze(listing, value, reserve_buffer=Decimal("0"))
+        self.assertEqual(uncertain.risk_discount, Decimal("0.08"))
+        self.assertLess(uncertain.max_hammer, clean.max_hammer)
+        self.assertFalse(uncertain.eligible)
+        self.assertIn("seller_data_unverified", uncertain.risk_flags)
 
     def test_store_rejects_second_armed_intent_and_concurrent_transition(self):
         with tempfile.NamedTemporaryFile() as f:
@@ -76,7 +87,7 @@ class CoreTests(unittest.TestCase):
     def test_screen_ranks_eligible_headroom_and_excludes_expired_or_unmatched(self):
         now = self.now
         good = Listing("good", "Pokemon Umbreon holo PSA 7", "https://example.test/good", "USD",
-                       Decimal("50"), now + timedelta(hours=3), Decimal("0"), "graded")
+                       Decimal("50"), now + timedelta(hours=3), Decimal("0"), "graded", 400, Decimal("99.5"))
         expired = Listing("expired", good.title, "https://example.test/expired", "USD", Decimal("50"),
                           now - timedelta(seconds=1), Decimal("0"), "graded")
         comps = [SaleComp(good.title, now - timedelta(days=i), Decimal("200"), condition="graded") for i in range(1, 7)]

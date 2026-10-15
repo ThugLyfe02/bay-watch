@@ -61,21 +61,40 @@ def analyze(listing: Listing, valuation: Valuation, *, tax_rate: Decimal = Decim
         raise ValueError("tax and fee rates must be between 0 and 1")
     if not Decimal(0) <= reserve_buffer < Decimal(1) or not Decimal(0) <= risk_discount < Decimal(1):
         raise ValueError("buffer and risk discount must be between 0 and 1")
-    all_in_cap = (valuation.low * (Decimal(1) - reserve_buffer) * (Decimal(1) - risk_discount)).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
+    flags: list[str] = []
+    haircuts: list[Decimal] = []
+    if valuation.confidence == "low":
+        flags.append("thin_comps")
+        haircuts.append(Decimal("0.12"))
+    if listing.seller_feedback is None or listing.seller_score is None:
+        flags.append("seller_data_unverified")
+        haircuts.append(Decimal("0.08"))
+    elif listing.seller_feedback < 25:
+        flags.append("limited_seller_history")
+        haircuts.append(Decimal("0.08"))
+    if listing.seller_score is not None and listing.seller_score < Decimal("98.0"):
+        flags.append("seller_score_below_98")
+        haircuts.append(Decimal("0.10"))
+    if listing.condition.casefold() in {"unknown", "not specified"}:
+        flags.append("condition_unverified")
+        haircuts.append(Decimal("0.12"))
+    # Compound disclosed haircuts so multiple independent risks cannot exceed a linear sum.
+    retained = Decimal(1) - risk_discount
+    for haircut in haircuts:
+        retained *= Decimal(1) - haircut
+    effective_discount = Decimal(1) - retained
+    all_in_cap = (valuation.low * (Decimal(1) - reserve_buffer) * retained).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
     # Model buyer fee on hammer; sales tax on hammer + shipping + buyer fee.
     max_hammer = ((all_in_cap / (Decimal(1) + tax_rate) - listing.shipping) /
                   (Decimal(1) + buyer_fee_rate)).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
     max_hammer = max(Decimal(0), max_hammer)
     estimated_edge = valuation.fair_value - (listing.current_price + listing.shipping)
     bid_headroom = max_hammer - listing.current_price
-    flags: list[str] = []
-    if valuation.confidence == "low": flags.append("thin_comps")
-    if listing.seller_feedback is not None and listing.seller_feedback < 25: flags.append("limited_seller_history")
-    if listing.seller_score is not None and listing.seller_score < Decimal("98.0"): flags.append("seller_score_below_98")
-    if listing.condition.casefold() in {"unknown", "not specified"}: flags.append("condition_unverified")
     if bid_headroom < 0: flags.append("already_above_ceiling")
-    eligible = bid_headroom >= 0 and valuation.confidence != "low" and "condition_unverified" not in flags
-    return Opportunity(listing, valuation, max_hammer, all_in_cap, estimated_edge, bid_headroom, eligible, tuple(flags))
+    seller_risk = {"seller_data_unverified", "limited_seller_history", "seller_score_below_98"}
+    eligible = bid_headroom >= 0 and valuation.confidence != "low" and not (seller_risk | {"condition_unverified"}).intersection(flags)
+    return Opportunity(listing, valuation, max_hammer, all_in_cap, estimated_edge, bid_headroom,
+                       effective_discount, eligible, tuple(flags))
 
 
 def screen_listings(listings: list[Listing], comps: list[SaleComp], *, tax_rate: Decimal = Decimal("0"),

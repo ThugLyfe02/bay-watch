@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None):
                 "value_range": [str(o.valuation.low), str(o.valuation.high)], "confidence": o.valuation.confidence,
                 "comp_count": o.valuation.comp_count, "max_hammer": str(o.max_hammer),
                 "bid_headroom": str(o.bid_headroom), "estimated_edge": str(o.estimated_edge),
-                "eligible": o.eligible, "risk_flags": o.risk_flags} for o in opportunities], indent=2))
+                "risk_discount": str(o.risk_discount), "eligible": o.eligible, "risk_flags": o.risk_flags} for o in opportunities], indent=2))
             store.audit("opportunities", None, {"queries": queries, "listing_count": len(listings), "scored_count": len(opportunities)})
         elif args.cmd == "analyze":
             listing = store.get_listing(args.item_id)
@@ -99,7 +99,7 @@ def main(argv: list[str] | None = None):
             value = estimate_value(listing, load_comps(args.comps))
             if not value: raise ValueError("no sufficiently similar sold comps; refusing to invent a valuation")
             o = analyze(listing, value, tax_rate=Decimal(args.tax), buyer_fee_rate=Decimal(args.buyer_fee), reserve_buffer=Decimal(args.buffer))
-            print(json.dumps({"item_id": listing.item_id, "fair_value": str(value.fair_value), "range": [str(value.low), str(value.high)], "confidence": value.confidence, "comps": value.comp_count, "all_in_cap": str(o.all_in_cap), "max_hammer": str(o.max_hammer), "bid_headroom": str(o.bid_headroom), "eligible": o.eligible, "estimated_edge": str(o.estimated_edge), "risk_flags": o.risk_flags}, indent=2))
+            print(json.dumps({"item_id": listing.item_id, "fair_value": str(value.fair_value), "range": [str(value.low), str(value.high)], "confidence": value.confidence, "comps": value.comp_count, "all_in_cap": str(o.all_in_cap), "max_hammer": str(o.max_hammer), "bid_headroom": str(o.bid_headroom), "risk_discount": str(o.risk_discount), "eligible": o.eligible, "estimated_edge": str(o.estimated_edge), "risk_flags": o.risk_flags}, indent=2))
         elif args.cmd == "arm":
             item = store.get_listing(args.item_id)
             if not item: raise ValueError("listing not found; run search first")
