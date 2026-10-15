@@ -46,5 +46,7 @@ class Opportunity:
     max_hammer: Decimal
     all_in_cap: Decimal
     estimated_edge: Decimal
+    bid_headroom: Decimal
+    eligible: bool
     risk_flags: tuple[str, ...]
 

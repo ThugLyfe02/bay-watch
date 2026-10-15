@@ -12,7 +12,7 @@ import time
 from .ebay import EbayClient, EbayError
 from .models import SaleComp
 from .store import Store
-from .valuation import analyze, estimate_value
+from .valuation import analyze, estimate_value, screen_listings
 
 
 def load_comps(path: str) -> list[SaleComp]:
@@ -32,6 +32,15 @@ def main(argv: list[str] | None = None):
     s.add_argument("query", help="primary title/query")
     s.add_argument("--variant", action="append", default=[], help="additional title spelling or catalog alias; repeatable")
     s.add_argument("--limit", type=int, default=30, help="maximum results per query")
+    op = sub.add_parser("opportunities", help="Search, value, filter, and rank auctions in one pass")
+    op.add_argument("query")
+    op.add_argument("--variant", action="append", default=[])
+    op.add_argument("--comps", required=True)
+    op.add_argument("--limit", type=int, default=30, help="maximum results per query")
+    op.add_argument("--tax", default="0")
+    op.add_argument("--buyer-fee", default="0")
+    op.add_argument("--buffer", default="0.08")
+    op.add_argument("--max-hours", type=int, default=168)
     a = sub.add_parser("analyze", help="Analyze a stored listing against your sold-comp CSV")
     a.add_argument("item_id"); a.add_argument("--comps", required=True); a.add_argument("--tax", default="0")
     a.add_argument("--buyer-fee", default="0"); a.add_argument("--buffer", default="0.08")
@@ -59,13 +68,34 @@ def main(argv: list[str] | None = None):
                 store.save_listing(item)
                 print(json.dumps({"item_id": item.item_id, "title": item.title, "price": str(item.current_price), "shipping": str(item.shipping), "end_time": item.end_time.isoformat(), "url": item.url}, ensure_ascii=False))
             store.audit("search", None, {"queries": queries, "count": len(listings)})
+        elif args.cmd == "opportunities":
+            queries = list(dict.fromkeys([args.query, *args.variant]))
+            if args.max_hours < 1 or args.max_hours > 24 * 30:
+                raise ValueError("max-hours must be between 1 and 720")
+            client = EbayClient()
+            by_id = {}
+            for query in queries:
+                for item in client.search_auctions(query, args.limit):
+                    by_id.setdefault(item.item_id, item)
+            listings = list(by_id.values())
+            for item in listings: store.save_listing(item)
+            opportunities = screen_listings(listings, load_comps(args.comps), tax_rate=Decimal(args.tax),
+                buyer_fee_rate=Decimal(args.buyer_fee), reserve_buffer=Decimal(args.buffer), max_hours=args.max_hours)
+            print(json.dumps([{"item_id": o.listing.item_id, "title": o.listing.title, "url": o.listing.url,
+                "current_bid": str(o.listing.current_price), "shipping": str(o.listing.shipping),
+                "end_time": o.listing.end_time.isoformat(), "fair_value": str(o.valuation.fair_value),
+                "value_range": [str(o.valuation.low), str(o.valuation.high)], "confidence": o.valuation.confidence,
+                "comp_count": o.valuation.comp_count, "max_hammer": str(o.max_hammer),
+                "bid_headroom": str(o.bid_headroom), "estimated_edge": str(o.estimated_edge),
+                "eligible": o.eligible, "risk_flags": o.risk_flags} for o in opportunities], indent=2))
+            store.audit("opportunities", None, {"queries": queries, "listing_count": len(listings), "scored_count": len(opportunities)})
         elif args.cmd == "analyze":
             listing = store.get_listing(args.item_id)
             if not listing: raise ValueError("listing not found; run search first")
             value = estimate_value(listing, load_comps(args.comps))
             if not value: raise ValueError("no sufficiently similar sold comps; refusing to invent a valuation")
             o = analyze(listing, value, tax_rate=Decimal(args.tax), buyer_fee_rate=Decimal(args.buyer_fee), reserve_buffer=Decimal(args.buffer))
-            print(json.dumps({"item_id": listing.item_id, "fair_value": str(value.fair_value), "range": [str(value.low), str(value.high)], "confidence": value.confidence, "comps": value.comp_count, "all_in_cap": str(o.all_in_cap), "max_hammer": str(o.max_hammer), "estimated_edge": str(o.estimated_edge), "risk_flags": o.risk_flags}, indent=2))
+            print(json.dumps({"item_id": listing.item_id, "fair_value": str(value.fair_value), "range": [str(value.low), str(value.high)], "confidence": value.confidence, "comps": value.comp_count, "all_in_cap": str(o.all_in_cap), "max_hammer": str(o.max_hammer), "bid_headroom": str(o.bid_headroom), "eligible": o.eligible, "estimated_edge": str(o.estimated_edge), "risk_flags": o.risk_flags}, indent=2))
         elif args.cmd == "arm":
             item = store.get_listing(args.item_id)
             if not item: raise ValueError("listing not found; run search first")

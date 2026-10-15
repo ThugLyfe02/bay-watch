@@ -43,6 +43,14 @@ auction-scout intents
 auction-scout worker --loop
 ```
 
+For a single ranked scan, use `opportunities`; it searches the primary query and aliases, deduplicates listings, screens to a deadline window, applies the comp and cost model, and ranks by eligibility/headroom:
+
+```bash
+auction-scout opportunities "Umbreon PSA 7" --variant "Japanese Umbreon grade 7" --comps sold-comps.csv --tax 0.08875 --buffer 0.10 --max-hours 72
+```
+
+Only medium/high confidence matches with a nonnegative ceiling headroom and a specified condition are marked eligible. The report still includes lower-confidence candidates as watch-only so thin evidence is visible.
+
 The worker posts the eBay proxy bid at the configured lead time. eBay's proxy bidding system accepts the buyer's maximum and bids only as needed. Do not enter an amount above your personal all-in budget. For a production account, after approval:
 
 ```bash

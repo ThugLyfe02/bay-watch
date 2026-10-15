@@ -67,11 +67,30 @@ def analyze(listing: Listing, valuation: Valuation, *, tax_rate: Decimal = Decim
                   (Decimal(1) + buyer_fee_rate)).quantize(Decimal("0.01"), rounding=ROUND_FLOOR)
     max_hammer = max(Decimal(0), max_hammer)
     estimated_edge = valuation.fair_value - (listing.current_price + listing.shipping)
+    bid_headroom = max_hammer - listing.current_price
     flags: list[str] = []
     if valuation.confidence == "low": flags.append("thin_comps")
     if listing.seller_feedback is not None and listing.seller_feedback < 25: flags.append("limited_seller_history")
     if listing.seller_score is not None and listing.seller_score < Decimal("98.0"): flags.append("seller_score_below_98")
     if listing.condition.casefold() in {"unknown", "not specified"}: flags.append("condition_unverified")
-    if listing.current_price + listing.shipping > max_hammer: flags.append("already_above_ceiling")
-    return Opportunity(listing, valuation, max_hammer, all_in_cap, estimated_edge, tuple(flags))
+    if bid_headroom < 0: flags.append("already_above_ceiling")
+    eligible = bid_headroom >= 0 and valuation.confidence != "low" and "condition_unverified" not in flags
+    return Opportunity(listing, valuation, max_hammer, all_in_cap, estimated_edge, bid_headroom, eligible, tuple(flags))
+
+
+def screen_listings(listings: list[Listing], comps: list[SaleComp], *, tax_rate: Decimal = Decimal("0"),
+                    buyer_fee_rate: Decimal = Decimal("0"), reserve_buffer: Decimal = Decimal("0.08"),
+                    max_hours: int = 168, now: datetime | None = None) -> list[Opportunity]:
+    now = now or datetime.now(timezone.utc)
+    deadline = now.timestamp() + max_hours * 3600
+    results = []
+    for listing in listings:
+        if listing.end_time.timestamp() <= now.timestamp() or listing.end_time.timestamp() > deadline:
+            continue
+        value = estimate_value(listing, comps, now=now)
+        if value is None:
+            continue
+        results.append(analyze(listing, value, tax_rate=tax_rate, buyer_fee_rate=buyer_fee_rate,
+                               reserve_buffer=reserve_buffer))
+    return sorted(results, key=lambda x: (x.eligible, x.bid_headroom, x.estimated_edge), reverse=True)
 

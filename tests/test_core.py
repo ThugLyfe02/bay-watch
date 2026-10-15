@@ -5,7 +5,7 @@ from decimal import Decimal
 
 from auction_scout.models import Listing, SaleComp, Valuation
 from auction_scout.store import Store
-from auction_scout.valuation import analyze, estimate_value
+from auction_scout.valuation import analyze, estimate_value, screen_listings
 
 
 class CoreTests(unittest.TestCase):
@@ -53,6 +53,18 @@ class CoreTests(unittest.TestCase):
             store.transition_intent(row["id"], "armed", "submitting", {})
             with self.assertRaises(ValueError): store.transition_intent(row["id"], "armed", "submitting", {})
             store.close()
+
+    def test_screen_ranks_eligible_headroom_and_excludes_expired_or_unmatched(self):
+        now = self.now
+        good = Listing("good", "Pokemon Umbreon holo PSA 7", "https://example.test/good", "USD",
+                       Decimal("50"), now + timedelta(hours=3), Decimal("0"), "graded")
+        expired = Listing("expired", good.title, "https://example.test/expired", "USD", Decimal("50"),
+                          now - timedelta(seconds=1), Decimal("0"), "graded")
+        comps = [SaleComp(good.title, now - timedelta(days=i), Decimal("200"), condition="graded") for i in range(1, 7)]
+        results = screen_listings([expired, good], comps, reserve_buffer=Decimal("0"), now=now)
+        self.assertEqual([x.listing.item_id for x in results], ["good"])
+        self.assertTrue(results[0].eligible)
+        self.assertGreater(results[0].bid_headroom, Decimal(0))
 
 
 if __name__ == "__main__": unittest.main()
