@@ -84,6 +84,10 @@ def main(argv: list[str] | None = None):
     w.add_argument("--loop", action="store_true"); w.add_argument("--poll-seconds", type=float, default=0.25)
     w.add_argument("--concurrency", type=int, default=4, help="bounded simultaneous API submissions (1..16)")
     w.add_argument("--live", action="store_true", help="Required for production API calls")
+    check = sub.add_parser("api-check", help="Run read-only eBay API connectivity checks; never submits bids")
+    check.add_argument("--query", required=True, help="small Browse search used to test application-token access")
+    check.add_argument("--offer-item-id", help="optional item ID to test buyer-token Offer read access")
+    check.add_argument("--live-read", action="store_true", help="allow read-only checks against production APIs")
     recon = sub.add_parser("reconcile", help="Read ended-auction status from the official Offer API; never resubmits bids")
     recon.add_argument("--live-read", action="store_true", help="Allow read-only reconciliation against production API")
     outcome = sub.add_parser("record-outcome", help="Append explicitly sourced outcome, purchase, resale, or market evidence")
@@ -223,6 +227,64 @@ def main(argv: list[str] | None = None):
                 submit_due_intents(store, client, concurrency=args.concurrency)
                 if not args.loop: break
                 time.sleep(max(0.05, min(args.poll_seconds, 1)))
+        elif args.cmd == "api-check":
+            env = os.getenv("EBAY_API_ENV", "sandbox").casefold()
+            if env == "production" and not args.live_read:
+                raise ValueError("production API checks are read-only but require --live-read")
+            client = EbayClient()
+            report = {"environment": env, "bids_submitted": False, "browse_search": "not_checked",
+                      "browse_item_detail": "not_checked", "offer_read": "not_checked", "failures": []}
+            report["browse_auth_mode"] = ("static_token" if client.tokens.static_application_token else
+                                           "client_credentials" if client.tokens.can_mint_application_token else "missing")
+            report["offer_auth_mode"] = ("static_token" if client.tokens.static_user_token else
+                                         "refresh_token" if client.tokens.can_refresh_user_token else "missing")
+            try:
+                listings = client.search_auctions(args.query, limit=1)
+                report["browse_search"] = "passed"
+                report["browse_result_count"] = len(listings)
+            except EbayError as exc:
+                report["browse_search"] = "failed"
+                report["failures"].append({"surface": "Browse search", "http_status": exc.status_code,
+                                           "reason": "API request failed; verify environment-specific credentials and access"})
+            if report["browse_search"] == "passed" and listings:
+                try:
+                    details = client.get_item(listings[0].item_id)
+                    if not isinstance(details, dict):
+                        raise ValueError("Browse item detail response was not an object")
+                    if details.get("itemId") != listings[0].item_id:
+                        raise ValueError("Browse item detail did not match the search result ID")
+                    report["browse_item_detail"] = "passed"
+                except EbayError as exc:
+                    report["browse_item_detail"] = "failed"
+                    report["failures"].append({"surface": "Browse item detail", "http_status": exc.status_code,
+                                               "reason": "API request failed; verify item access and environment"})
+                except ValueError as exc:
+                    report["browse_item_detail"] = "failed"
+                    report["failures"].append({"surface": "Browse item detail", "http_status": None, "reason": str(exc)})
+            elif report["browse_search"] == "passed":
+                report["browse_item_detail"] = "not_tested_no_search_result"
+            if args.offer_item_id:
+                try:
+                    result = client.get_bidding(args.offer_item_id)
+                    if not isinstance(result, dict):
+                        raise ValueError("Offer response was not an object")
+                    if result.get("itemId") and result["itemId"] != args.offer_item_id:
+                        raise ValueError("Offer response did not match the requested item ID")
+                    if not isinstance(result.get("auctionStatus"), str) or not isinstance(result.get("highBidder"), bool):
+                        raise ValueError("Offer response did not contain the expected auction status fields")
+                    report["offer_read"] = "passed"
+                except EbayError as exc:
+                    report["offer_read"] = "failed"
+                    report["failures"].append({"surface": "Offer read", "http_status": exc.status_code,
+                                               "reason": "API request failed; verify buyer consent, Offer scope, and environment"})
+                except ValueError as exc:
+                    report["offer_read"] = "failed"
+                    report["failures"].append({"surface": "Offer read", "http_status": None, "reason": str(exc)})
+            report["production_offer_approval"] = "not_detected_by_this_read_only_check" if env == "production" else "not_applicable_sandbox"
+            report["note"] = "This check makes GET requests only. It does not prove production approval, submit a bid, or verify end-to-end bid behavior."
+            print(json.dumps(report, indent=2))
+            if report["failures"]:
+                raise SystemExit(1)
         elif args.cmd == "reconcile":
             env = os.getenv("EBAY_API_ENV", "sandbox").casefold()
             if env == "production" and not args.live_read:

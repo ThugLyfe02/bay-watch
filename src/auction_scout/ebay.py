@@ -11,12 +11,8 @@ from urllib.request import Request, urlopen
 
 from .models import Listing
 from .money import format_money
-
-
-class EbayError(RuntimeError):
-    def __init__(self, message: str, *, status_code: int | None = None):
-        super().__init__(message)
-        self.status_code = status_code
+from .errors import EbayError
+from .oauth import EbayTokenProvider
 
 
 class EbayClient:
@@ -32,6 +28,8 @@ class EbayClient:
         self.marketplace = marketplace or os.getenv("EBAY_MARKETPLACE", "EBAY_US")
         if self.env not in self.ROOTS: raise ValueError("EBAY_API_ENV must be sandbox or production")
         self.root = self.ROOTS[self.env]
+        self.tokens = EbayTokenProvider(env=self.env, application_token=self.application_token,
+                                        user_token=self.user_token)
 
     def _request(self, method: str, path: str, *, query: dict | None = None, body: dict | None = None,
                  retries: int = 2, access_token: str | None = None):
@@ -66,7 +64,7 @@ class EbayClient:
     def search_auctions(self, query: str, limit: int = 30) -> list[Listing]:
         payload = self._request("GET", "/buy/browse/v1/item_summary/search",
                                 query={"q": query, "filter": "buyingOptions:{AUCTION}", "limit": min(max(limit, 1), 200)},
-                                access_token=self.application_token)
+                                access_token=self.tokens.get_application_token())
         out = []
         for row in payload.get("itemSummaries", []):
             price = row.get("currentBidPrice") or row.get("price") or {}
@@ -89,16 +87,16 @@ class EbayClient:
     def get_item(self, item_id: str):
         """Fetch fresh public listing state through the official Browse API."""
         return self._request("GET", f"/buy/browse/v1/item/{quote(item_id, safe='')}", retries=0,
-                             access_token=self.application_token)
+                             access_token=self.tokens.get_application_token())
 
     def get_bidding(self, item_id: str):
         """Read the authenticated buyer's bidding status from the official Offer API."""
         return self._request("GET", f"/buy/offer/v1_beta/bidding/{quote(item_id, safe='')}", retries=0,
-                             access_token=self.user_token)
+                             access_token=self.tokens.get_user_token())
 
     def place_proxy_bid(self, item_id: str, amount: Decimal, currency: str):
         # The endpoint validates bidder eligibility and auction state. Production access is gated by eBay.
         return self._request("POST", f"/buy/offer/v1_beta/bidding/{quote(item_id, safe='')}/place_proxy_bid",
                              body={"maxAmount": {"currency": currency, "value": format_money(amount, currency)}},
-                             retries=0, access_token=self.user_token)
+                             retries=0, access_token=self.tokens.get_user_token())
 

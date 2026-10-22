@@ -53,6 +53,15 @@ For every report:
 
 ## Next build sequence
 
+### Stage 0 — OAuth and Sandbox qualification
+
+- Mint application credentials with eBay's client-credentials flow and use a buyer-consented authorization-code refresh token for Offer. Keep access tokens in memory; do not write credentials or tokens to the database or audit log.
+- Provide a repeatable read-only API check that validates Browse search/item details and, when given a known test auction, Offer buyer-read authorization. It must never send a bid and must require an explicit flag for production GETs.
+- Exercise the complete buyer flow in Sandbox using a dedicated test buyer and known test auction. Record which calls were verified and which were blocked. Unit tests with mocked clients do not count as Sandbox acceptance.
+- Keep production Offer approval, application growth review, and production token consent as external gates. The application must not infer approval from successful token minting.
+
+Current implementation: `EbayTokenProvider` mints/refreshes access tokens in memory; `api-check` is read-only; `docs/EBAY_SANDBOX_RUNBOOK.md` defines the manual Sandbox qualification sequence. This does not mean any Sandbox API credentials or end-to-end bid flow have been verified.
+
 ### Stage A — Evidence accumulation and gap visibility
 
 Keep extending the existing append-only evidence primitives rather than adding parallel ledgers.

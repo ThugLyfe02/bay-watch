@@ -97,6 +97,30 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(payload["nested"]["keep"], "visible")
             store.close()
 
+    def test_restart_with_submitting_intent_never_retries_bid(self):
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            start = datetime.now(timezone.utc)
+            end_time = start + timedelta(minutes=2)
+            listing = Listing("ebay:restart", self.listing.title, "https://example.test/restart", "USD",
+                              Decimal("100"), end_time, Decimal("0"), "graded")
+            store.save_listing(listing)
+            store.set_budget("USD", Decimal("200"))
+            store.arm_intent(listing.item_id, Decimal("150"), "USD", end_time, 30)
+            row = store.db.execute("SELECT id FROM bid_intents").fetchone()
+            store.transition_intent(row["id"], "armed", "submitting", {"claim": "test-crash-before-network"})
+            store.close()
+
+            reopened = Store(f.name)
+            class NoCallClient:
+                def get_item(self, item_id): raise AssertionError("restarted worker must not preflight/retry submitting intent")
+                def place_proxy_bid(self, *args): raise AssertionError("restarted worker must never resubmit")
+            submitted, unknown = submit_due_intents(reopened, NoCallClient(), now=start + timedelta(seconds=100))
+            self.assertEqual((submitted, unknown), (0, 0))
+            self.assertEqual(reopened.db.execute("SELECT status FROM bid_intents").fetchone()["status"], "submitting")
+            self.assertEqual(reopened.budget_status("USD")["reserved"], Decimal("150"))
+            reopened.close()
+
     def test_worker_submits_simultaneous_closes_in_parallel(self):
         class ParallelClient:
             def __init__(self, end_time):

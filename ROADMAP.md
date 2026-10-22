@@ -36,7 +36,7 @@ The `plan` report ranks saved candidates within each currency using visible head
 
 ## 5. Production reliability gate
 
-Richer worker restart and latency observability remains on the roadmap. Capture claim, preflight, and submission timing; no-bid reasons; restart recovery; and ambiguous POST states before using operational rates to tune execution. Move from the current single-process SQLite worker to a transactional server-side queue only when measured concurrency requires it. Add idempotent claims, clock-skew checks, alerting, credential rotation guidance, and a paper-trading period before any production bid flow.
+The code now supports ephemeral client-credential token minting and buyer refresh-token renewal, plus a read-only `api-check` and Sandbox qualification runbook. A real Sandbox bid lifecycle has not yet been verified. Richer worker restart and latency observability remains on the roadmap. Capture claim, preflight, and submission timing; no-bid reasons; restart recovery; and ambiguous POST states before using operational rates to tune execution. Move from the current single-process SQLite worker to a transactional server-side queue only when measured concurrency requires it. Add idempotent claims, clock-skew checks, alerting, credential rotation guidance, and a paper-trading period before any production bid flow.
 
 **Why it compounds:** reliability preserves the value of the research layer and prevents duplicate or late submissions as the number of watched auctions grows.
 

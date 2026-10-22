@@ -11,7 +11,7 @@ Bay Watch is an eBay-first auction research and bid workbench. It searches the o
 - Sold comps with a different currency are excluded. Bid rounding and amount precision follow currency minor units, including zero- and three-decimal currencies.
 - Worker claims an intent before network I/O and never auto-retries a bid with an ambiguous outcome. Verify the account on eBay before taking any further action.
 - Before the one-way bid request, the worker refreshes the exact item through Browse and checks auction state, item ID, currency, minimum bid, Buy It Now ceiling, and remaining time. A failed preflight means no bid POST was sent.
-- Browse discovery uses an application access token; Offer bidding uses a buyer-authorized user token. They are separate OAuth flows and credentials.
+- Browse uses an application token; Offer uses a buyer-consented user token. Configure the environment-specific Client ID/Secret, then provide the buyer's long-lived OAuth refresh token with the Offer auction scope. Bay Watch mints/refreshes short-lived tokens in memory; it never writes tokens to SQLite. Static access-token overrides are supported for short manual checks only.
 - Production mode requires `EBAY_API_ENV=production`, `ENABLE_LIVE_BIDDING=YES`, and `--live`. eBay's Buy Offer API production access is partner-gated; sandbox is the default.
 - Keep tokens in a secrets manager. Do not use your eBay password or commit credentials.
 - Prediction snapshots and verified outcome evidence are append-only. A timeout or expired local intent remains unresolved; it is never recorded as a loss.
@@ -25,9 +25,13 @@ cd auction-scout
 python -m venv .venv && . .venv/bin/activate
 pip install -e .
 cp .env.example .env  # populate values in your shell or a local env loader
-export EBAY_APPLICATION_ACCESS_TOKEN='...' # client-credentials grant for Browse
-export EBAY_USER_ACCESS_TOKEN='...'        # buyer authorization for Offer bids
+# Configure Sandbox credentials and buyer consent. The user refresh token must be minted
+# for this environment and include the Offer auction scope.
+export EBAY_CLIENT_ID='...'
+export EBAY_CLIENT_SECRET='...'
+export EBAY_USER_REFRESH_TOKEN='...'        # buyer consent for Offer auction scope
 export EBAY_API_ENV=sandbox
+auction-scout api-check --query "Pokemon Umbreon PSA 7"
 auction-scout search "2000 Japanese Umbreon holo PSA 7" --limit 25
 # Search alternate catalog wording and deduplicate by item ID:
 auction-scout search "Umbreon PSA 7" --variant "Japanese Umbreon grade 7" --variant "Umbreon #197 holo" --limit 20
@@ -39,6 +43,10 @@ Search stores normalized results in SQLite and prints JSONL. Create `sold-comps.
 title,sold_at,price,shipping,condition,source,currency
 Pokemon Umbreon holo PSA 7,2026-09-12T18:00:00Z,210.00,0,graded,manual,USD
 ```
+
+Before exercising the worker, run `api-check`. It performs read-only GETs; add `--offer-item-id` to verify Offer read authorization against a known Sandbox auction. It never places a bid and cannot establish production approval. For production read checks, explicitly pass `--live-read`; the worker still requires separate bidding guards. The Sandbox buyer refresh token must come from an eBay consent grant configured for Sandbox and the `buy.offer.auction` scope. Production uses separate credentials, redirect/RuName settings, and consent.
+
+Follow [the Sandbox qualification runbook](docs/EBAY_SANDBOX_RUNBOOK.md) before testing the worker against a Sandbox auction. A successful read-only check is not a bid-lifecycle test.
 
 Then analyze, set the total open-auction exposure cap, and arm a hard ceiling:
 
@@ -115,7 +123,7 @@ The starter intentionally does not scrape sold listings or claim API production 
 
 ## Database upgrades
 
-The SQLite database migrates transactionally using `PRAGMA user_version`. Version 7 adds an append-only user-evidenced missed-listing ledger to the v6 prediction, outcome, discovery, intent-settlement, and cost-accounting tables. Opening a pre-migration database preserves its listings, intents, budget limits, and audit history. Ended unresolved intents keep their full maximum reserved until definitive evidence settles them. Back up the local database before upgrading. SQLite remains single-process.
+The SQLite database migrates transactionally using `PRAGMA user_version`. Version 7 adds an append-only user-evidenced missed-listing ledger to the v6 prediction, outcome, discovery, intent-settlement, and cost-accounting tables. OAuth tokens are ephemeral and do not require a database migration. Opening a pre-migration database preserves its listings, intents, budget limits, and audit history. Ended unresolved intents keep their full maximum reserved until definitive evidence settles them. Back up the local database before upgrading. SQLite remains single-process.
 
 ## Tests
 
