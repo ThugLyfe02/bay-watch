@@ -58,6 +58,16 @@ def main(argv: list[str] | None = None):
     s.add_argument("query", help="primary title/query")
     s.add_argument("--variant", action="append", default=[], help="additional title spelling or catalog alias; repeatable")
     s.add_argument("--limit", type=int, default=30, help="maximum results per query")
+    profile_save = sub.add_parser("profile-save", help="Save a versioned category search profile")
+    profile_save.add_argument("--name", required=True)
+    profile_save.add_argument("--category", required=True)
+    profile_save.add_argument("--query", action="append", required=True, help="primary query or alias; repeatable")
+    profile_save.add_argument("--identity-field", action="append", default=[], choices=["card_number", "grading_company", "grade", "language", "edition", "variant"])
+    sub.add_parser("profiles", help="List latest saved category profile versions")
+    profile_search = sub.add_parser("profile-search", help="Run every query in a saved profile through official Browse API")
+    profile_search.add_argument("name")
+    profile_search.add_argument("--version", type=int, help="replay a specific immutable profile version")
+    profile_search.add_argument("--limit", type=int, default=30)
     op = sub.add_parser("opportunities", help="Search, value, filter, and rank auctions in one pass")
     op.add_argument("query")
     op.add_argument("--variant", action="append", default=[])
@@ -104,6 +114,7 @@ def main(argv: list[str] | None = None):
     missed.add_argument("--source", required=True, help="where the user found the missed listing")
     missed.add_argument("--evidence-ref", required=True, help="URL, import row, or other reviewable reference")
     missed.add_argument("--profile", help="saved category profile name when applicable")
+    missed.add_argument("--profile-version", type=int, help="exact saved profile version used for this miss")
     missed.add_argument("--observed-at", help="timezone-aware timestamp; defaults to now")
     missed.add_argument("--reason", help="user-described reason it was missed")
     missed.add_argument("--idempotency-key", help="stable key for safe replay")
@@ -141,6 +152,50 @@ def main(argv: list[str] | None = None):
                 store.save_listing(item)
                 print(json.dumps({"item_id": item.item_id, "title": item.title, "price": str(item.current_price), "shipping": str(item.shipping), "end_time": item.end_time.isoformat(), "url": item.url}, ensure_ascii=False))
             store.audit("search", None, {"queries": queries, "count": len(listings)})
+        elif args.cmd == "profile-save":
+            profile = store.save_category_profile(args.name, args.category, args.query, args.identity_field)
+            print(json.dumps(profile, indent=2))
+        elif args.cmd == "profiles":
+            print(json.dumps(store.list_category_profiles(), indent=2))
+        elif args.cmd == "profile-search":
+            if not 1 <= args.limit <= 200:
+                raise ValueError("limit must be between 1 and 200")
+            profile = store.get_category_profile(args.name, args.version)
+            if not profile:
+                raise ValueError("saved category profile not found")
+            client = EbayClient()
+            found = {}
+            run_summaries = []
+            for query in profile["queries"]:
+                started = monotonic()
+                try:
+                    results = client.search_auctions(query, args.limit)
+                except EbayError as exc:
+                    run_id = store.record_discovery_run(query, [], status="error",
+                        duration_ms=int((monotonic()-started)*1000),
+                        error_class="rate_limited" if exc.status_code == 429 else "api_error",
+                        profile_name=profile["name"], profile_version=profile["version"])
+                    run_summaries.append({"run_id": run_id, "query": query, "status": "error"})
+                    raise
+                run_id = store.record_discovery_run(query, results, status="ok",
+                    duration_ms=int((monotonic()-started)*1000), profile_name=profile["name"],
+                    profile_version=profile["version"])
+                run_summaries.append({"run_id": run_id, "query": query, "status": "ok",
+                                      "result_count": len(results), "unique_count": len({x.item_id for x in results})})
+                for item in results:
+                    found.setdefault(item.item_id, item)
+            output = [{"item_id": item.item_id, "title": item.title, "url": item.url,
+                       "currency": item.currency, "current_price": str(item.current_price),
+                       "shipping": str(item.shipping), "end_time": item.end_time.isoformat(),
+                       "profile": profile["name"], "profile_version": profile["version"]}
+                      for item in found.values()]
+            report = {"profile": profile["name"], "profile_version": profile["version"],
+                      "category": profile["category"], "identity_fields": profile["identity_fields"],
+                      "runs": run_summaries, "distinct_listing_count": len(output),
+                      "recall": "unknown; this run measures only recorded Browse API results"}
+            print(json.dumps({"report": report, "listings": output}, indent=2))
+            store.audit("profile_search", None, {"profile": profile["name"], "version": profile["version"],
+                                                  "run_count": len(run_summaries), "listing_count": len(output)})
         elif args.cmd == "opportunities":
             queries = list(dict.fromkeys([args.query, *args.variant]))
             if args.max_hours < 1 or args.max_hours > 24 * 30:
@@ -342,7 +397,7 @@ def main(argv: list[str] | None = None):
         elif args.cmd == "record-missed":
             feedback_id = store.record_missed_listing(args.item_id, query=args.query, source=args.source,
                 evidence_ref=args.evidence_ref, profile=args.profile, observed_at=args.observed_at,
-                reason=args.reason, idempotency_key=args.idempotency_key)
+                reason=args.reason, idempotency_key=args.idempotency_key, profile_version=args.profile_version)
             print(json.dumps({"feedback_id": feedback_id, "idempotent": True,
                               "note": "User-evidenced feedback is not a marketplace recall denominator."}))
         elif args.cmd == "calibration":

@@ -96,6 +96,20 @@ auction-scout dossier ITEM_ID --format text
 
 `search` and `opportunities` also preserve each alias query run and the listing IDs it surfaced. Use `discovery-report` to inspect recorded coverage, freshness, API errors, and duplicate yield. This describes Bay Watch's query activity; total marketplace recall remains unknown. A reviewed manual auction result can settle a reservation by passing its `--intent-id` to `record-outcome`.
 
+Save a reusable category search profile to keep its category vocabulary and identity fields versioned. Every profile edit creates a new immutable version; `profile-search --version N` can replay an earlier version, with each alias query and result linked to that exact version. Reports count only recorded API results and user-evidenced misses, never inferred marketplace recall:
+
+```bash
+auction-scout profile-save --name pokemon-cards --category "Trading cards" \
+  --query "Umbreon PSA 7" --query "Umbreon #197 holo" \
+  --identity-field grade --identity-field card_number --identity-field language
+auction-scout profiles
+auction-scout profile-search pokemon-cards --limit 30
+auction-scout profile-search pokemon-cards --version 1 --limit 30
+auction-scout discovery-report
+```
+
+`profile-search` is user initiated and uses only the official Browse API. Identity fields document which attributes the user expects to review; they do not authenticate an item or override the existing identity and eligibility checks. After reviewing a concrete miss, associate feedback with the exact profile version used via `record-missed --profile pokemon-cards --profile-version 1`. Historical reports retain old profile versions and show legacy/unversioned miss examples separately.
+
 Use `record-missed` only when you have a concrete listing and a reviewable source reference. It appends a user-evidenced example against the query/profile you expected to find it; this helps refine aliases but does not establish a marketplace-wide recall denominator. `evidence-report` tracks prediction snapshots still missing verified market references, calibration sample/error availability, resolved versus unresolved intent evidence, recorded resale economics, query coverage, and the count of user-evidenced misses. Zero samples are reported as unmeasurable rather than as zero error or zero missed closes:
 
 ```bash

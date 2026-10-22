@@ -20,7 +20,7 @@ Export each saved prediction as JSON or readable text with listing facts, identi
 
 ## 3. Compliant discovery coverage — query provenance implemented
 
-Track each Browse query/alias run and every listing ID it returned, then report run freshness, API error class, and duplicate yield. Users can provide title aliases directly. `record-missed` now captures an append-only, source-referenced user example and `evidence-report` counts those records without treating them as a recall denominator. Saved reusable category profiles remain future work; total marketplace recall is explicitly unknown.
+Track each Browse query/alias run and every listing ID it returned, then report run freshness, API error class, and duplicate yield. Users can provide title aliases directly. `record-missed` captures an append-only, source-referenced user example. Saved category profiles now preserve query aliases and declared identity-review fields as immutable versions; profile searches link every API run to the version used, so later edits do not rewrite historical coverage. Total marketplace recall remains explicitly unknown. Remaining work: richer feedback-to-profile analysis and reviewed shadow evaluations after evidence accumulates.
 
 **Why it compounds:** broad title vocabulary and category-specific language expose under-described listings earlier, while coverage telemetry makes search improvements measurable.
 

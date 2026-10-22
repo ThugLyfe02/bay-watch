@@ -45,7 +45,7 @@ class LearningLoopTests(unittest.TestCase):
             "2026-01-01T00:00:00+00:00", "unknown", "{}", "2025-01-01T00:00:00+00:00"))
         db.commit(); db.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.schema_version(), 7)
+        self.assertEqual(self.store.schema_version(), 9)
         self.assertIsNotNone(self.store.get_listing("old"))
         self.assertIn("prediction_id", {r["name"] for r in self.store.db.execute("PRAGMA table_info(bid_intents)")})
 
@@ -156,6 +156,54 @@ class LearningLoopTests(unittest.TestCase):
         primary = next(row for row in report["queries"] if row["query"] == "Test card")
         self.assertEqual(primary["duplicate_count"], 1)
         self.assertIn("recall is unknown", report["recall_note"])
+
+    def test_category_profiles_are_immutable_versioned_and_report_only_observed_coverage(self):
+        first = self.store.save_category_profile("pokemon-cards", "Trading cards",
+            ["Umbreon PSA 7", "Umbreon #197 holo"], ["card_number", "grade"])
+        second = self.store.save_category_profile("pokemon-cards", "Trading cards",
+            ["Umbreon Japanese PSA 7"], ["language", "grade"])
+        self.assertEqual((first["version"], second["version"]), (1, 2))
+        self.assertEqual(self.store.get_category_profile("pokemon-cards", 1)["queries"],
+                         ["Umbreon PSA 7", "Umbreon #197 holo"])
+        with self.assertRaises(ValueError):
+            self.store.save_category_profile("bad", "cards", ["query"], ["invented_identity"])
+        listing = self.store.get_listing("item-1")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.db.execute("UPDATE category_profiles SET category='changed' WHERE name='pokemon-cards'")
+        with self.assertRaises(ValueError):
+            self.store.record_discovery_run("not-an-alias", [listing], status="ok", duration_ms=2,
+                profile_name="pokemon-cards", profile_version=2)
+        self.store.record_discovery_run("Umbreon Japanese PSA 7", [listing, listing], status="ok",
+            duration_ms=8, profile_name="pokemon-cards", profile_version=2)
+        self.store.record_missed_listing("item-missed", query="Umbreon Japanese PSA 7", source="user_report",
+            evidence_ref="reviewable-ref", profile="pokemon-cards", profile_version=2)
+        profile_report = next(row for row in self.store.category_profile_report() if row["version"] == 2)
+        self.assertEqual(profile_report["version"], 2)
+        self.assertEqual(profile_report["run_count"], 1)
+        self.assertEqual(profile_report["distinct_returned_listings"], 1)
+        self.assertEqual(profile_report["user_evidenced_missed_examples"], 1)
+        self.assertEqual(profile_report["unversioned_missed_examples"], 0)
+        self.assertEqual(profile_report["recall"].split(";")[0], "unknown")
+
+    def test_profile_search_runs_saved_aliases_and_preserves_profile_provenance(self):
+        self.store.save_category_profile("pokemon-cards", "Trading cards",
+            ["Umbreon PSA 7", "Umbreon #197 holo"], ["grade"])
+        listing = self.store.get_listing("item-1")
+        class FakeClient:
+            def __init__(self): self.queries = []
+            def search_auctions(self, query, limit):
+                self.queries.append(query)
+                return [listing]
+        output = StringIO()
+        with patch("auction_scout.cli.EbayClient", FakeClient), redirect_stdout(output):
+            from auction_scout.cli import main
+            main(["--db", self.path, "profile-search", "pokemon-cards", "--limit", "10"])
+        import json
+        result = json.loads(output.getvalue())
+        self.assertEqual(len(result["report"]["runs"]), 2)
+        self.assertEqual(result["report"]["distinct_listing_count"], 1)
+        self.assertEqual(result["report"]["recall"].split(";")[0], "unknown")
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM discovery_runs WHERE profile_name='pokemon-cards' AND profile_version=1").fetchone()[0], 2)
 
     def test_portfolio_plan_keeps_currencies_separate_and_changes_no_maxima(self):
         end = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()

@@ -49,6 +49,7 @@ For every report:
 - Retain unresolved or conflicting outcomes in the denominator of “missing” until corrected by append-only evidence.
 - Count user-evidenced missed listings as examples only. Explicitly state that total marketplace recall and population false-negative rate are unknown.
 - Preserve query provenance across deduplication. Coverage measures recorded API queries and results, not all eligible listings.
+- Keep category profile definitions versioned and immutable. Link each query run and user-evidenced miss to the exact profile version; treat legacy misses without a version as unassigned instead of retroactively attributing them.
 - Do not claim false-positive rate until a defensible labeling protocol defines a candidate as a false positive and verified outcome records support it. Do not claim missed-close rate until close intent, worker capacity, timing, and verified missed execution labels are consistently captured.
 
 ## Next build sequence
@@ -75,13 +76,11 @@ Keep extending the existing append-only evidence primitives rather than adding p
 
 ### Stage B — Saved category profiles and controlled discovery experiments
 
-Add reusable, versioned category profiles only when the schema/API can preserve reproducibility.
+Saved category profiles are implemented with immutable versions, category, repeatable permitted title aliases, and declared typed identity-review fields. The CLI supports save, list, and explicit version replay; each discovery run records its exact profile name/version. Missed-listing feedback can link to that version, while unversioned historical examples remain separately visible.
 
-- A profile contains a stable ID, human-readable name, category, repeatable permitted title aliases, typed identity fields, field policies (required/high-impact/optional), source/marketplace, and version history.
+- Retain a stable profile identity and add field policies (required/high-impact/optional) only when category fixtures can support them.
 - Unknown identity remains distinct from match. A known high-impact conflict blocks eligibility.
-- Save which profile version and exact aliases produced each query run and prediction.
-- Provide a CLI workflow to create, inspect, revise, and run a profile without deleting earlier versions or query provenance.
-- Compare aliases using bounded, reviewable experiments. Report query yield, unique items, overlap, API errors, freshness, and user-evidenced misses; do not label one profile “higher recall” without a valid denominator.
+- Compare aliases using bounded, reviewable experiments. Report query yield, unique items, overlap, API errors, freshness, and profile-versioned user-evidenced misses; do not label one profile “higher recall” without a valid denominator.
 - Continue to use only documented APIs or user-imported files. Record provenance/licensing metadata for imported comps.
 
 ### Stage C — Chronological shadow evaluation, human reviewed

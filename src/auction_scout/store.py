@@ -125,13 +125,40 @@ CREATE TRIGGER missed_listing_feedback_no_delete BEFORE DELETE ON missed_listing
  BEGIN SELECT RAISE(ABORT, 'missed listing feedback is append-only'); END;
 """
 
+PROFILE_SCHEMA = """
+CREATE TABLE category_profiles (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT NOT NULL,
+ version INTEGER NOT NULL CHECK(version > 0),
+ category TEXT NOT NULL,
+ queries_json TEXT NOT NULL,
+ identity_fields_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ profile_hash TEXT NOT NULL UNIQUE,
+ UNIQUE(name,version)
+);
+CREATE INDEX category_profiles_name_version ON category_profiles(name,version DESC);
+CREATE TRIGGER category_profiles_no_update BEFORE UPDATE ON category_profiles
+ BEGIN SELECT RAISE(ABORT, 'category profiles are versioned and immutable'); END;
+CREATE TRIGGER category_profiles_no_delete BEFORE DELETE ON category_profiles
+ BEGIN SELECT RAISE(ABORT, 'category profiles are versioned and immutable'); END;
+ALTER TABLE discovery_runs ADD COLUMN profile_name TEXT;
+ALTER TABLE discovery_runs ADD COLUMN profile_version INTEGER;
+CREATE INDEX discovery_runs_profile ON discovery_runs(profile_name,profile_version,searched_at);
+"""
+
+PROFILE_FEEDBACK_SCHEMA = """
+ALTER TABLE missed_listing_feedback ADD COLUMN profile_version INTEGER;
+CREATE INDEX missed_listing_feedback_profile ON missed_listing_feedback(profile,profile_version,observed_at);
+"""
+
 MIGRATIONS = ((1, SCHEMA), (2, LEARNING_SCHEMA),
               (3, "ALTER TABLE bid_intents ADD COLUMN prediction_id INTEGER REFERENCES prediction_snapshots(id);"),
               (4, "ALTER TABLE bid_intents ADD COLUMN settled_at TEXT;\n"
                   "ALTER TABLE bid_intents ADD COLUMN resolution_event_id INTEGER REFERENCES learning_events(id);"),
               (5, DISCOVERY_SCHEMA),
               (6, "ALTER TABLE learning_events ADD COLUMN other_costs TEXT NOT NULL DEFAULT '0';"),
-              (7, MISSED_LISTING_SCHEMA))
+              (7, MISSED_LISTING_SCHEMA), (8, PROFILE_SCHEMA), (9, PROFILE_FEEDBACK_SCHEMA))
 OUTCOME_STATES = {
     "auction": {"won", "lost", "no_sale", "cancelled", "unavailable", "unknown"},
     "purchase": {"recorded"},
@@ -178,18 +205,107 @@ class Store:
     def schema_version(self) -> int:
         return int(self.db.execute("PRAGMA user_version").fetchone()[0])
 
+    def save_category_profile(self, name: str, category: str, queries: list[str],
+                              identity_fields: list[str] | None = None) -> dict:
+        """Append a reproducible profile version; existing versions remain immutable."""
+        name, category = name.strip(), category.strip()
+        queries = list(dict.fromkeys(q.strip() for q in queries if q and q.strip()))
+        allowed = {"card_number", "grading_company", "grade", "language", "edition", "variant"}
+        fields = sorted(set(identity_fields or []))
+        if not name or not category or not queries:
+            raise ValueError("profile name, category, and at least one query are required")
+        if len(name) > 80 or len(category) > 120 or len(queries) > 32 or any(len(q) > 240 for q in queries):
+            raise ValueError("profile field exceeds its supported size")
+        unknown = set(fields) - allowed
+        if unknown:
+            raise ValueError("unsupported identity fields: " + ", ".join(sorted(unknown)))
+        with self.db:
+            prior = self.db.execute("SELECT MAX(version) AS version FROM category_profiles WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            version = int(prior["version"] or 0) + 1
+            created = datetime.now(timezone.utc).isoformat()
+            payload = {"name": name, "version": version, "category": category,
+                       "queries": queries, "identity_fields": fields, "created_at": created}
+            digest = hashlib.sha256(self._canonical(payload).encode()).hexdigest()
+            self.db.execute("""INSERT INTO category_profiles
+              (name,version,category,queries_json,identity_fields_json,created_at,profile_hash)
+              VALUES(?,?,?,?,?,?,?)""", (name,version,category,self._canonical(queries),
+              self._canonical(fields),created,digest))
+        self.audit("category_profile_saved", None, {"name": name, "version": version, "query_count": len(queries)})
+        return self.get_category_profile(name, version)
+
+    def get_category_profile(self, name: str, version: int | None = None) -> dict | None:
+        if version is None:
+            row = self.db.execute("SELECT * FROM category_profiles WHERE name=? COLLATE NOCASE ORDER BY version DESC LIMIT 1", (name,)).fetchone()
+        else:
+            row = self.db.execute("SELECT * FROM category_profiles WHERE name=? COLLATE NOCASE AND version=?", (name,version)).fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["queries"] = json.loads(result.pop("queries_json"))
+        result["identity_fields"] = json.loads(result.pop("identity_fields_json"))
+        return result
+
+    def list_category_profiles(self) -> list[dict]:
+        rows = self.db.execute("""SELECT p.* FROM category_profiles p JOIN
+          (SELECT name,MAX(version) version FROM category_profiles GROUP BY name COLLATE NOCASE) latest
+          ON latest.name=p.name COLLATE NOCASE AND latest.version=p.version ORDER BY p.name COLLATE NOCASE""").fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["queries"] = json.loads(item.pop("queries_json"))
+            item["identity_fields"] = json.loads(item.pop("identity_fields_json"))
+            out.append(item)
+        return out
+
+    def list_category_profile_versions(self) -> list[dict]:
+        rows = self.db.execute("SELECT * FROM category_profiles ORDER BY name COLLATE NOCASE,version").fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["queries"] = json.loads(item.pop("queries_json"))
+            item["identity_fields"] = json.loads(item.pop("identity_fields_json"))
+            result.append(item)
+        return result
+
+    def category_profile_report(self) -> list[dict]:
+        """Report only captured profile runs and user-evidenced misses; never infer recall."""
+        reports = []
+        for profile in self.list_category_profile_versions():
+            name, version = profile["name"], profile["version"]
+            runs = self.db.execute("SELECT * FROM discovery_runs WHERE profile_name=? AND profile_version=? ORDER BY searched_at DESC,id DESC", (name,version)).fetchall()
+            hit_count = self.db.execute("""SELECT COUNT(DISTINCT h.item_id) FROM discovery_hits h
+              JOIN discovery_runs r ON r.id=h.run_id WHERE r.profile_name=? AND r.profile_version=?""", (name,version)).fetchone()[0]
+            misses = self.db.execute("SELECT COUNT(*) FROM missed_listing_feedback WHERE profile=? COLLATE NOCASE AND profile_version=?", (name,version)).fetchone()[0]
+            unversioned_misses = self.db.execute("SELECT COUNT(*) FROM missed_listing_feedback WHERE profile=? COLLATE NOCASE AND profile_version IS NULL", (name,)).fetchone()[0]
+            reports.append({"name": name, "version": version, "category": profile["category"],
+                "query_count": len(profile["queries"]), "run_count": len(runs),
+                "successful_runs": sum(r["status"] == "ok" for r in runs),
+                "error_runs": sum(r["status"] == "error" for r in runs),
+                "distinct_returned_listings": hit_count, "user_evidenced_missed_examples": misses,
+                "unversioned_missed_examples": unversioned_misses,
+                "last_run": runs[0]["searched_at"] if runs else None,
+                "recall": "unknown; recorded API results and user examples are not a marketplace denominator"})
+        return reports
+
     def record_discovery_run(self, query: str, results: list[Listing], *, status: str,
                              duration_ms: int, error_class: str | None = None,
-                             source: str = "ebay_browse_api") -> int:
+                             source: str = "ebay_browse_api", profile_name: str | None = None,
+                             profile_version: int | None = None) -> int:
         if status not in {"ok", "error"} or not query.strip() or duration_ms < 0:
             raise ValueError("invalid discovery run")
+        if (profile_name is None) != (profile_version is None):
+            raise ValueError("profile name and version must be recorded together")
+        if profile_name is not None:
+            profile = self.get_category_profile(profile_name, profile_version)
+            if not profile or query not in profile["queries"]:
+                raise ValueError("discovery query must belong to the saved profile version")
         item_ids = [item.item_id for item in results]
         unique_ids = list(dict.fromkeys(item_ids))
         when = datetime.now(timezone.utc).isoformat()
         with self.db:
-            cur = self.db.execute("""INSERT INTO discovery_runs(query,source,searched_at,status,result_count,unique_count,duplicate_count,duration_ms,error_class)
-              VALUES(?,?,?,?,?,?,?,?,?)""", (query,source,when,status,len(item_ids),len(unique_ids),
-              len(item_ids)-len(unique_ids),duration_ms,error_class))
+            cur = self.db.execute("""INSERT INTO discovery_runs(query,source,searched_at,status,result_count,unique_count,duplicate_count,duration_ms,error_class,profile_name,profile_version)
+              VALUES(?,?,?,?,?,?,?,?,?,?,?)""", (query,source,when,status,len(item_ids),len(unique_ids),
+              len(item_ids)-len(unique_ids),duration_ms,error_class,profile_name,profile_version))
             run_id = int(cur.lastrowid)
             for position, item in enumerate(results):
                 self.save_listing(item)
@@ -206,27 +322,33 @@ class Store:
         return {"source": "official Browse API query runs", "run_count": len(runs),
                 "distinct_listings": self.db.execute("SELECT COUNT(DISTINCT item_id) FROM discovery_hits").fetchone()[0],
                 "queries": [dict(r) for r in grouped], "recent_runs": [dict(r) for r in runs[:50]],
+                "category_profiles": self.category_profile_report(),
                 "recall_note": "Coverage describes recorded query activity and results; total marketplace recall is unknown."}
 
     def record_missed_listing(self, item_id: str, *, query: str, source: str, evidence_ref: str,
                               profile: str | None = None, observed_at: str | None = None,
-                              reason: str | None = None, idempotency_key: str | None = None) -> int:
+                              reason: str | None = None, idempotency_key: str | None = None,
+                              profile_version: int | None = None) -> int:
         """Append user-evidenced missed-search feedback; this is not a recall denominator."""
         item_id, query, source, evidence_ref = (value.strip() for value in (item_id, query, source, evidence_ref))
         if not all((item_id, query, source, evidence_ref)):
             raise ValueError("item ID, query, source, and evidence reference are required")
+        if profile_version is not None and (not profile or not self.get_category_profile(profile, profile_version)):
+            raise ValueError("profile version must identify a saved category profile")
+        if profile is not None and not profile.strip():
+            raise ValueError("profile name cannot be blank")
         timestamp = observed_at or datetime.now(timezone.utc).isoformat()
         parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             raise ValueError("observation timestamp must include a timezone")
         timestamp = parsed.astimezone(timezone.utc).isoformat()
-        stable = {"item_id": item_id, "query": query, "profile": profile, "source": source,
+        stable = {"item_id": item_id, "query": query, "profile": profile, "profile_version": profile_version, "source": source,
                   "evidence_ref": evidence_ref, "observed_at": timestamp, "reason": reason}
         key = idempotency_key or hashlib.sha256(self._canonical(stable).encode()).hexdigest()
         with self.db:
             self.db.execute("""INSERT OR IGNORE INTO missed_listing_feedback
-              (item_id,query,profile,source,evidence_ref,observed_at,reason,idempotency_key)
-              VALUES(?,?,?,?,?,?,?,?)""", (item_id, query, profile, source, evidence_ref, timestamp, reason, key))
+              (item_id,query,profile,source,evidence_ref,observed_at,reason,idempotency_key,profile_version)
+              VALUES(?,?,?,?,?,?,?,?,?)""", (item_id, query, profile, source, evidence_ref, timestamp, reason, key, profile_version))
             row = self.db.execute("SELECT id FROM missed_listing_feedback WHERE idempotency_key=?", (key,)).fetchone()
         return int(row["id"])
 
