@@ -100,6 +100,8 @@ Only after verified target data exists, compare candidate policy versions agains
 
 Improve recovery without weakening one-shot submission safety.
 
+Initial `worker-report` telemetry is implemented: due-run queue depth/overload, claim outcomes, monotonic preflight and submission durations, stable no-bid reasons, sanitized failure classes, unresolved intent age, and incomplete run detection. It intentionally records only runs with due work. Extend it from observed evidence; do not claim missed-close rates until execution-miss labels have a reviewed definition and denominator.
+
 - Capture monotonic durations and UTC timestamps for claim, preflight, bid request, and state transition. Record bounded, sanitized failure classes rather than raw response bodies or credentials.
 - Report latency distributions only with counts, periods, and enough samples; expose queue depth, concurrency, overload, stale preflight, no-bid reason, submitted/rejected/unknown outcomes, and close timing.
 - Add restart/fault tests for crash after claim and before POST, timeout after possible server acceptance, duplicate local workers claiming one intent, and restart while `submitting`/`unknown`.

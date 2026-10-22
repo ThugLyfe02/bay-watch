@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import json
+import sqlite3
 from threading import Barrier
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -160,6 +161,51 @@ class CoreTests(unittest.TestCase):
                 "SELECT details_json FROM audit_log WHERE action='bid_intent_submitted'")]
             self.assertTrue(all(entry["raw_response_stored"] is False for entry in audit))
             self.assertTrue(all("response" not in entry for entry in audit))
+            report = store.worker_observability_report()
+            self.assertEqual(report["run_count"], 1)
+            self.assertEqual(report["completed_run_count"], 1)
+            self.assertEqual(report["max_due_queue_depth"], 2)
+            self.assertEqual(report["phase_latency"]["preflight"]["sample_count"], 2)
+            self.assertEqual(report["phase_latency"]["submission"]["sample_count"], 2)
+            self.assertEqual(report["phase_outcomes"]["submission:accepted"], 2)
+            observation = store.db.execute("SELECT id FROM worker_observations LIMIT 1").fetchone()
+            with self.assertRaises(sqlite3.IntegrityError):
+                store.db.execute("UPDATE worker_observations SET outcome='unknown' WHERE id=?", (observation["id"],))
+            store.close()
+
+    def test_idle_worker_poll_does_not_create_persistent_runs(self):
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            self.assertEqual(submit_due_intents(store, object()), (0, 0))
+            report = store.worker_observability_report()
+            self.assertEqual(report["run_count"], 0)
+            self.assertEqual(report["phase_latency"], {})
+            self.assertIn("no missed-close rate", report["metrics_status"])
+            store.close()
+
+    def test_worker_report_flags_due_batch_larger_than_configured_concurrency(self):
+        class FastClient:
+            def __init__(self, end_time): self.end_time = end_time
+            def get_item(self, item_id):
+                return {"itemId": item_id, "buyingOptions": ["AUCTION"], "itemEndDate": self.end_time.isoformat(),
+                    "minimumPriceToBid": {"currency": "USD", "value": "100"},
+                    "currentBidPrice": {"currency": "USD", "value": "90"}}
+            def place_proxy_bid(self, *args): return {"status": "accepted"}
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            start = datetime.now(timezone.utc)
+            end_time = start + timedelta(seconds=50)
+            store.set_budget("USD", Decimal("400"))
+            for item_id in ("ebay:overload-a", "ebay:overload-b"):
+                listing = Listing(item_id, self.listing.title, "url", "USD", Decimal("90"), end_time, Decimal("0"), "graded")
+                store.save_listing(listing)
+                store.arm_intent(item_id, Decimal("150"), "USD", end_time, 30)
+            self.assertEqual(submit_due_intents(store, FastClient(end_time), concurrency=1,
+                now=start + timedelta(seconds=21)), (2,0))
+            report = store.worker_observability_report()
+            self.assertEqual(report["overloaded_run_count"], 1)
+            self.assertEqual(report["recent_runs"][0]["claimed_count"], 2)
+            self.assertEqual(report["recent_runs"][0]["concurrency"], 1)
             store.close()
 
     def test_worker_preflight_blocks_when_live_minimum_exceeds_hard_cap(self):
@@ -194,6 +240,41 @@ class CoreTests(unittest.TestCase):
             self.assertEqual((submitted, unknown), (0, 0))
             self.assertEqual(client.bid_calls, 0)
             self.assertEqual(store.db.execute("SELECT status FROM bid_intents").fetchone()["status"], "failed")
+            report = store.worker_observability_report()
+            self.assertEqual(report["no_bid_reason_counts"]["maximum_below_minimum"], 1)
+            self.assertEqual(report["phase_outcomes"]["preflight:blocked"], 1)
+            self.assertEqual(report["recent_runs"][0]["no_bid_count"], 1)
+            store.close()
+
+    def test_ambiguous_submission_is_measured_without_persisting_error_payload(self):
+        class TimeoutClient:
+            def __init__(self, end_time): self.end_time = end_time
+            def get_item(self, item_id):
+                return {"itemId": item_id, "buyingOptions": ["AUCTION"],
+                    "itemEndDate": self.end_time.isoformat(),
+                    "minimumPriceToBid": {"currency": "USD", "value": "100"},
+                    "currentBidPrice": {"currency": "USD", "value": "90"}}
+            def place_proxy_bid(self, *args):
+                raise TimeoutError("private-response-body-must-not-be-saved")
+
+        with tempfile.NamedTemporaryFile() as f:
+            store = Store(f.name)
+            start = datetime.now(timezone.utc)
+            end_time = start + timedelta(seconds=50)
+            listing = Listing("ebay:timeout", self.listing.title, "https://example.test/timeout", "USD",
+                              Decimal("90"), end_time, Decimal("0"), "graded")
+            store.save_listing(listing)
+            store.set_budget("USD", Decimal("200"))
+            store.arm_intent(listing.item_id, Decimal("150"), "USD", end_time, 30)
+            submitted, unknown = submit_due_intents(store, TimeoutClient(end_time), now=start + timedelta(seconds=21))
+            self.assertEqual((submitted, unknown), (0, 1))
+            report = store.worker_observability_report()
+            self.assertEqual(report["phase_outcomes"]["submission:unknown"], 1)
+            self.assertEqual(report["failure_class_counts"]["TimeoutError"], 1)
+            self.assertEqual(report["unresolved_intents"][0]["status"], "unknown")
+            self.assertEqual(store.budget_status("USD")["reserved"], Decimal("150"))
+            saved = json.dumps([dict(row) for row in store.db.execute("SELECT * FROM audit_log")])
+            self.assertNotIn("private-response-body-must-not-be-saved", saved)
             store.close()
 
     def test_worker_preflight_blocks_listing_identity_mismatch(self):

@@ -123,6 +123,7 @@ def main(argv: list[str] | None = None):
     sub.add_parser("margin-report", help="Report recorded purchase/resale economics; projections are excluded")
     sub.add_parser("discovery-report", help="Report recorded Browse query coverage, freshness, errors, and duplicate yield")
     sub.add_parser("evidence-report", help="Summarize recorded outcome, calibration, margin, and discovery evidence gaps")
+    sub.add_parser("worker-report", help="Report observed worker latency, overload, no-bid reasons, and unresolved intents")
     plan = sub.add_parser("plan", help="Rank saved candidates by visible components without changing bids")
     plan.add_argument("--concurrency", type=int, default=4)
     plan.add_argument("--safe-window-seconds", type=int, default=25)
@@ -498,6 +499,8 @@ def main(argv: list[str] | None = None):
                 print(dossier_data["note"])
         elif args.cmd == "discovery-report":
             print(json.dumps(store.discovery_report(), indent=2))
+        elif args.cmd == "worker-report":
+            print(json.dumps(store.worker_observability_report(), indent=2))
         elif args.cmd == "evidence-report":
             print(json.dumps(store.evidence_coverage_report(), indent=2))
         elif args.cmd == "plan":

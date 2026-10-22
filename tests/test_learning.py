@@ -11,7 +11,7 @@ from io import StringIO
 from auction_scout.calibration import calibration_report
 from auction_scout.models import Listing
 from auction_scout.planning import portfolio_plan
-from auction_scout.store import SCHEMA, Store
+from auction_scout.store import MIGRATIONS, SCHEMA, Store
 
 
 class LearningLoopTests(unittest.TestCase):
@@ -45,9 +45,25 @@ class LearningLoopTests(unittest.TestCase):
             "2026-01-01T00:00:00+00:00", "unknown", "{}", "2025-01-01T00:00:00+00:00"))
         db.commit(); db.close()
         self.store = Store(self.path)
-        self.assertEqual(self.store.schema_version(), 9)
+        self.assertEqual(self.store.schema_version(), 10)
         self.assertIsNotNone(self.store.get_listing("old"))
         self.assertIn("prediction_id", {r["name"] for r in self.store.db.execute("PRAGMA table_info(bid_intents)")})
+
+    def test_schema_v9_database_upgrades_to_worker_observability_without_data_loss(self):
+        self.store.close()
+        v9_path = os.path.join(self.tmp.name, "schema-v9.db")
+        db = sqlite3.connect(v9_path)
+        for version, script in MIGRATIONS:
+            if version > 9:
+                break
+            db.executescript(f"BEGIN IMMEDIATE;\n{script}\nPRAGMA user_version={version};\nCOMMIT;")
+        db.execute("INSERT INTO listings VALUES(?,?,?,?,?,?,?,?,?,?)", ("v9-item", "V9 item", "url", "USD", "1", "0",
+            "2026-01-01T00:00:00+00:00", "unknown", "{}", "2025-01-01T00:00:00+00:00"))
+        db.commit(); db.close()
+        self.store = Store(v9_path)
+        self.assertEqual(self.store.schema_version(), 10)
+        self.assertIsNotNone(self.store.get_listing("v9-item"))
+        self.assertEqual(self.store.worker_observability_report()["run_count"], 0)
 
     def test_predictions_are_idempotent_and_immutable(self):
         first = self.prediction()

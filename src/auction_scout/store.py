@@ -152,13 +152,50 @@ ALTER TABLE missed_listing_feedback ADD COLUMN profile_version INTEGER;
 CREATE INDEX missed_listing_feedback_profile ON missed_listing_feedback(profile,profile_version,observed_at);
 """
 
+WORKER_OBSERVABILITY_SCHEMA = """
+CREATE TABLE worker_runs (
+ run_id TEXT PRIMARY KEY,
+ started_at TEXT NOT NULL,
+ finished_at TEXT,
+ concurrency INTEGER NOT NULL CHECK(concurrency BETWEEN 1 AND 16),
+ due_queue_depth INTEGER NOT NULL CHECK(due_queue_depth >= 0),
+ claimed_count INTEGER NOT NULL CHECK(claimed_count >= 0),
+ submitted_count INTEGER NOT NULL DEFAULT 0 CHECK(submitted_count >= 0),
+ unknown_count INTEGER NOT NULL DEFAULT 0 CHECK(unknown_count >= 0),
+ no_bid_count INTEGER NOT NULL DEFAULT 0 CHECK(no_bid_count >= 0),
+ overloaded INTEGER NOT NULL CHECK(overloaded IN (0,1)),
+ duration_ms INTEGER CHECK(duration_ms >= 0)
+);
+CREATE INDEX worker_runs_started ON worker_runs(started_at);
+CREATE TABLE worker_observations (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ run_id TEXT NOT NULL REFERENCES worker_runs(run_id),
+ intent_id INTEGER NOT NULL REFERENCES bid_intents(id),
+ phase TEXT NOT NULL CHECK(phase IN ('claim','preflight','submission')),
+ observed_at TEXT NOT NULL,
+ duration_ms INTEGER NOT NULL CHECK(duration_ms >= 0),
+ outcome TEXT NOT NULL CHECK(outcome IN ('claimed','expired','passed','blocked','error','accepted','unknown')),
+ reason_code TEXT,
+ failure_class TEXT,
+ seconds_to_close INTEGER,
+ observation_key TEXT NOT NULL UNIQUE
+);
+CREATE INDEX worker_observations_phase_time ON worker_observations(phase,observed_at);
+CREATE INDEX worker_observations_intent ON worker_observations(intent_id,observed_at);
+CREATE TRIGGER worker_observations_no_update BEFORE UPDATE ON worker_observations
+ BEGIN SELECT RAISE(ABORT, 'worker observations are append-only'); END;
+CREATE TRIGGER worker_observations_no_delete BEFORE DELETE ON worker_observations
+ BEGIN SELECT RAISE(ABORT, 'worker observations are append-only'); END;
+"""
+
 MIGRATIONS = ((1, SCHEMA), (2, LEARNING_SCHEMA),
               (3, "ALTER TABLE bid_intents ADD COLUMN prediction_id INTEGER REFERENCES prediction_snapshots(id);"),
               (4, "ALTER TABLE bid_intents ADD COLUMN settled_at TEXT;\n"
                   "ALTER TABLE bid_intents ADD COLUMN resolution_event_id INTEGER REFERENCES learning_events(id);"),
               (5, DISCOVERY_SCHEMA),
               (6, "ALTER TABLE learning_events ADD COLUMN other_costs TEXT NOT NULL DEFAULT '0';"),
-              (7, MISSED_LISTING_SCHEMA), (8, PROFILE_SCHEMA), (9, PROFILE_FEEDBACK_SCHEMA))
+              (7, MISSED_LISTING_SCHEMA), (8, PROFILE_SCHEMA), (9, PROFILE_FEEDBACK_SCHEMA),
+              (10, WORKER_OBSERVABILITY_SCHEMA))
 OUTCOME_STATES = {
     "auction": {"won", "lost", "no_sale", "cancelled", "unavailable", "unknown"},
     "purchase": {"recorded"},
@@ -204,6 +241,94 @@ class Store:
 
     def schema_version(self) -> int:
         return int(self.db.execute("PRAGMA user_version").fetchone()[0])
+
+    def start_worker_run(self, run_id: str, *, started_at: str, concurrency: int,
+                         due_queue_depth: int, claimed_count: int, overloaded: bool) -> None:
+        if not run_id or concurrency < 1 or concurrency > 16 or due_queue_depth < 0 or claimed_count < 0:
+            raise ValueError("invalid worker run metadata")
+        with self.db:
+            self.db.execute("""INSERT INTO worker_runs
+              (run_id,started_at,concurrency,due_queue_depth,claimed_count,overloaded)
+              VALUES(?,?,?,?,?,?)""", (run_id,started_at,concurrency,due_queue_depth,claimed_count,int(overloaded)))
+
+    def finish_worker_run(self, run_id: str, *, finished_at: str, duration_ms: int,
+                          submitted_count: int, unknown_count: int, no_bid_count: int) -> None:
+        if min(duration_ms,submitted_count,unknown_count,no_bid_count) < 0:
+            raise ValueError("worker run metrics cannot be negative")
+        with self.db:
+            cur = self.db.execute("""UPDATE worker_runs SET finished_at=?,duration_ms=?,submitted_count=?,
+              unknown_count=?,no_bid_count=? WHERE run_id=? AND finished_at IS NULL""",
+              (finished_at,duration_ms,submitted_count,unknown_count,no_bid_count,run_id))
+            if cur.rowcount != 1:
+                raise ValueError("worker run is missing or already completed")
+
+    def record_worker_observation(self, run_id: str, intent_id: int, *, phase: str,
+                                  observed_at: str, duration_ms: int, outcome: str,
+                                  observation_key: str, reason_code: str | None = None,
+                                  failure_class: str | None = None,
+                                  seconds_to_close: int | None = None) -> int:
+        if phase not in {"claim","preflight","submission"} or outcome not in {
+                "claimed","expired","passed","blocked","error","accepted","unknown"}:
+            raise ValueError("unsupported worker observation")
+        if duration_ms < 0 or not observation_key:
+            raise ValueError("worker observation duration and key are required")
+        parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("worker observation timestamp must include a timezone")
+        observed_at = parsed.astimezone(timezone.utc).isoformat()
+        with self.db:
+            self.db.execute("""INSERT OR IGNORE INTO worker_observations
+              (run_id,intent_id,phase,observed_at,duration_ms,outcome,reason_code,failure_class,seconds_to_close,observation_key)
+              VALUES(?,?,?,?,?,?,?,?,?,?)""", (run_id,intent_id,phase,observed_at,duration_ms,outcome,
+              reason_code,failure_class,seconds_to_close,observation_key))
+            row = self.db.execute("SELECT id FROM worker_observations WHERE observation_key=?", (observation_key,)).fetchone()
+        return int(row["id"])
+
+    def worker_observability_report(self) -> dict:
+        from statistics import median
+        runs = self.db.execute("SELECT * FROM worker_runs ORDER BY started_at DESC,run_id DESC").fetchall()
+        observations = self.db.execute("SELECT * FROM worker_observations ORDER BY observed_at,id").fetchall()
+        by_phase: dict[str,list[sqlite3.Row]] = {}
+        reason_counts: dict[str,int] = {}
+        failure_counts: dict[str,int] = {}
+        outcomes: dict[str,int] = {}
+        for row in observations:
+            by_phase.setdefault(row["phase"], []).append(row)
+            outcomes[row["phase"]+":"+row["outcome"]] = outcomes.get(row["phase"]+":"+row["outcome"],0)+1
+            if row["phase"] in {"claim","preflight"} and row["reason_code"]:
+                reason_counts[row["reason_code"]] = reason_counts.get(row["reason_code"],0)+1
+            if row["failure_class"]:
+                failure_counts[row["failure_class"]] = failure_counts.get(row["failure_class"],0)+1
+        def percentile(values, fraction):
+            if not values:
+                return None
+            values = sorted(values)
+            return values[max(0, int((len(values)-1)*fraction + 0.999999))]
+        latency = {}
+        for phase, rows in sorted(by_phase.items()):
+            values = [int(row["duration_ms"]) for row in rows]
+            latency[phase] = {"sample_count": len(values), "mean_ms": round(sum(values)/len(values),2),
+                              "median_ms": median(values), "p95_ms": percentile(values,0.95)}
+        unresolved = self.db.execute("""SELECT id,item_id,status,created_at,updated_at,end_time,submit_before
+          FROM bid_intents WHERE status IN ('submitting','submitted','unknown') AND settled_at IS NULL ORDER BY created_at,id""").fetchall()
+        incomplete = sum(run["finished_at"] is None for run in runs)
+        now = datetime.now(timezone.utc)
+        run_times = [run["started_at"] for run in runs]
+        return {"definition": "Durations are local monotonic elapsed milliseconds; timestamps and close runway are UTC observations.",
+            "generated_at": now.isoformat(),
+            "run_count": len(runs), "completed_run_count": len(runs)-incomplete, "incomplete_run_count": incomplete,
+            "coverage_period": {"from": min(run_times) if run_times else None,
+                                "through": max(run_times) if run_times else None},
+            "overloaded_run_count": sum(run["overloaded"] for run in runs),
+            "max_due_queue_depth": max((run["due_queue_depth"] for run in runs), default=0),
+            "phase_latency": latency, "phase_outcomes": outcomes,
+            "no_bid_reason_counts": dict(sorted(reason_counts.items())),
+            "failure_class_counts": dict(sorted(failure_counts.items())),
+            "unresolved_intents": [{"intent_id":r["id"],"item_id":r["item_id"],"status":r["status"],
+                "created_at":r["created_at"],"updated_at":r["updated_at"],"end_time":r["end_time"],
+                "submit_before":r["submit_before"],"age_seconds":max(0,int((now-datetime.fromisoformat(r["created_at"].replace("Z","+00:00")).astimezone(timezone.utc)).total_seconds()))} for r in unresolved],
+            "recent_runs": [dict(run) for run in runs[:50]],
+            "metrics_status": "observed samples only; no missed-close rate until reviewed execution-miss labels exist"}
 
     def save_category_profile(self, name: str, category: str, queries: list[str],
                               identity_fields: list[str] | None = None) -> dict:

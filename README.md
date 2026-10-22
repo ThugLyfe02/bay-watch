@@ -77,6 +77,12 @@ auction-scout worker --live --loop
 
 Do not run multiple workers against the same database. SQLite state transition prevents double claims for a single local worker, but production deployment should use a single scheduler or move claim semantics to a transactional server database before horizontal scaling.
 
+Review observed execution behavior with `worker-report`. It reports recorded run queue depth/overload, local monotonic preflight and submission durations, stable fail-closed reason codes, sanitized failure classes, and active unresolved intent age. Runs are written only when due work exists, so an idle polling loop does not grow the database at poll frequency. An interrupted run remains visible as incomplete; unresolved intents continue to reserve their exact maximum. The report describes observed samples and does not calculate a missed-close rate until reviewed execution-miss labels and outcomes exist:
+
+```bash
+auction-scout worker-report
+```
+
 ## Closeout learning and review
 
 Every `analyze` and `opportunities` decision saves a prediction snapshot with the listing facts, valuation range, confidence, comp CSV inputs, policy version, risk flags, and cost assumptions. Arming stores the exact user maximum in a separate armed-decision snapshot. Snapshots and evidence events cannot be updated or deleted through the application.
