@@ -220,8 +220,10 @@ class Store:
         if unknown:
             raise ValueError("unsupported identity fields: " + ", ".join(sorted(unknown)))
         with self.db:
-            prior = self.db.execute("SELECT MAX(version) AS version FROM category_profiles WHERE name=? COLLATE NOCASE", (name,)).fetchone()
+            prior = self.db.execute("SELECT name,MAX(version) AS version FROM category_profiles WHERE name=? COLLATE NOCASE", (name,)).fetchone()
             version = int(prior["version"] or 0) + 1
+            if prior["name"] is not None:
+                name = prior["name"]
             created = datetime.now(timezone.utc).isoformat()
             payload = {"name": name, "version": version, "category": category,
                        "queries": queries, "identity_fields": fields, "created_at": created}

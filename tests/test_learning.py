@@ -160,9 +160,10 @@ class LearningLoopTests(unittest.TestCase):
     def test_category_profiles_are_immutable_versioned_and_report_only_observed_coverage(self):
         first = self.store.save_category_profile("pokemon-cards", "Trading cards",
             ["Umbreon PSA 7", "Umbreon #197 holo"], ["card_number", "grade"])
-        second = self.store.save_category_profile("pokemon-cards", "Trading cards",
+        second = self.store.save_category_profile("POKEMON-CARDS", "Trading cards",
             ["Umbreon Japanese PSA 7"], ["language", "grade"])
         self.assertEqual((first["version"], second["version"]), (1, 2))
+        self.assertEqual(second["name"], "pokemon-cards")
         self.assertEqual(self.store.get_category_profile("pokemon-cards", 1)["queries"],
                          ["Umbreon PSA 7", "Umbreon #197 holo"])
         with self.assertRaises(ValueError):
